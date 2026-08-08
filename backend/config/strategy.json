@@ -21,7 +21,7 @@
     }
   },
   "custom": {
-    "enabled": true,
+    "enabled": false,
     "path": "backend/existing/selection_script.py"
   },
   "backtest": {

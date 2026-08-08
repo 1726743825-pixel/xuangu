@@ -12,7 +12,15 @@
 | `source/` | 原始 Node.js 脚本、配置和资料 | 只读保留；必须先经受控包装器转换输出 |
 | `README.md` | 本目录的接入契约 | 与 `../docs/api-contract.md` 保持一致 |
 
-当前仓库没有 `selection_script.py`，策略引擎在文件缺失时应继续运行内置策略。不要将密钥、数据库文件、临时下载行情或 `node_modules` 提交到此目录。
+`selection_script.py` 是供国内网络本机运行的选股入口：它通过项目的数据层拉取日线，并复用内置策略评分，返回可直接作为 `/api/selections/import` 的 `items` 的记录。它不连接 Railway 数据库，也不执行 HTTP 导入；外层本地定时脚本负责上传。数据源不可用时它会抛出带原因的 `LocalSelectionDataError`，不会把失败伪装成空选股结果。生产端策略配置已关闭 custom 动态加载，防止 Railway 执行这个本地入口。
+
+在 `backend/` 目录执行：
+
+```powershell
+python existing/selection_script.py 2026-08-07 > selections.json
+```
+
+输出为 JSON 数组；用它作为导入接口请求体的 `items`。本机需要安装 `backend/requirements.txt`，不需要 Railway 数据库、`JOB_API_TOKEN` 或 Tushare token；默认使用项目数据层配置的免费 K 线源。不要将密钥、数据库文件、临时下载行情或 `node_modules` 提交到此目录。
 
 ## Python 脚本接口
 
