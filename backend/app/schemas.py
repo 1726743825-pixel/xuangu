@@ -4,7 +4,7 @@ from datetime import date, datetime
 from math import isfinite
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 DataT = TypeVar("DataT")
@@ -142,3 +142,39 @@ class SelectionImportRequest(BaseModel):
 class SelectionImportResult(BaseModel):
     date: date
     count: int
+
+
+class QuoteImportItem(BaseModel):
+    """One verified daily OHLCV bar uploaded by the local selector host."""
+
+    stock_code: str = Field(pattern=r"^\d{6}$")
+    stock_name: str = Field(min_length=1, max_length=128)
+    trade_date: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+    @field_validator("open", "high", "low", "close", "volume")
+    @classmethod
+    def values_must_be_finite_and_non_negative(cls, value: float) -> float:
+        if not isfinite(value) or value < 0:
+            raise ValueError("OHLCV values must be finite and non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def high_must_not_be_less_than_low(self) -> "QuoteImportItem":
+        if self.high < self.low:
+            raise ValueError("high must be greater than or equal to low")
+        return self
+
+
+class QuoteImportRequest(BaseModel):
+    quotes: list[QuoteImportItem] = Field(min_length=1, max_length=5000)
+
+
+class QuoteImportResult(BaseModel):
+    count: int
+    start_date: date
+    end_date: date

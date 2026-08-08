@@ -20,6 +20,8 @@ from ...schemas import (
     APIResponse,
     HealthData,
     Quote,
+    QuoteImportRequest,
+    QuoteImportResult,
     RunSelectionAccepted,
     RunSelectionRequest,
     SelectionImportRequest,
@@ -128,6 +130,31 @@ def import_selections(
         for item in request.items
     ])
     return APIResponse(data=SelectionImportResult(date=request.trade_date, count=len(request.items)))
+
+
+@router.post("/quotes/import", response_model=APIResponse[QuoteImportResult])
+def import_quotes(
+    request: QuoteImportRequest,
+    _: None = Depends(_require_job_token),
+) -> APIResponse[QuoteImportResult]:
+    """Store local, real daily bars without querying an external market-data source."""
+    dates = [item.trade_date for item in request.quotes]
+    db.save_daily_quotes([
+        {
+            "code": item.stock_code,
+            "name": item.stock_name,
+            "trade_date": item.trade_date.isoformat(),
+            "open": item.open,
+            "high": item.high,
+            "low": item.low,
+            "close": item.close,
+            "volume": item.volume,
+        }
+        for item in request.quotes
+    ])
+    return APIResponse(data=QuoteImportResult(
+        count=len(request.quotes), start_date=min(dates), end_date=max(dates)
+    ))
 
 
 @router.post("/quotes/sync", response_model=APIResponse[RunSelectionAccepted], status_code=status.HTTP_202_ACCEPTED)
