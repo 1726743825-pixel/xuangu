@@ -19,8 +19,12 @@ const signalTones: SignalTone[] = ["indigo", "emerald", "amber", "sky", "rose"];
 
 function normaliseRows(value: unknown): BackendKlineRow[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((row): BackendKlineRow[] => Array.isArray(row) && row.length >= 6 && row.slice(1, 6).every((item) => Number.isFinite(Number(item)) && typeof row[0] === "string")
-    ? [[String(row[0]), Number(row[1]), Number(row[2]), Number(row[3]), Number(row[4]), Number(row[5])]] : []);
+  return value.flatMap((row): BackendKlineRow[] => {
+    if (!Array.isArray(row) || row.length < 6 || typeof row[0] !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(row[0])) return [];
+    const [open, close, low, high, volume] = row.slice(1, 6).map(Number);
+    if (![open, close, low, high, volume].every(Number.isFinite) || low > Math.min(open, close) || high < Math.max(open, close) || volume < 0) return [];
+    return [[row[0], open, close, low, high, volume]];
+  });
 }
 
 function monthlyBars(rows: BackendKlineRow[]): BackendKlineRow[] {
@@ -68,7 +72,7 @@ export default function StockDetailPage({ params }: { params: { code: string } }
       </header>
 
       <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-slate-950 dark:text-white">行情走势</h2><p className="mt-0.5 text-xs text-slate-400">K线 · 成交量 · MACD</p></div><div className="inline-flex w-fit rounded-lg bg-slate-100 p-1 dark:bg-slate-800">{PERIODS.map((item) => <button key={item.value} type="button" onClick={() => setPeriod(item.value)} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${period === item.value ? "bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-300" : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"}`}>{item.label}</button>)}</div></div>
+        <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-slate-950 dark:text-white">行情走势</h2><p className="mt-0.5 text-xs text-slate-400">K线 · 成交量</p></div><div className="inline-flex w-fit rounded-lg bg-slate-100 p-1 dark:bg-slate-800">{PERIODS.map((item) => <button key={item.value} type="button" onClick={() => setPeriod(item.value)} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${period === item.value ? "bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-300" : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"}`}>{item.label}</button>)}</div></div>
         <div className="p-2 sm:p-4"><KlineChart data={visibleRows} loading={dailyKline.isLoading || (period === "weekly" && weeklyKline.isLoading)} /></div>
       </section>
 
