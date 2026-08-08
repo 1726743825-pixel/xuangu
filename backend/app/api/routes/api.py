@@ -122,13 +122,17 @@ def import_selections(
 ) -> APIResponse[SelectionImportResult]:
     """Persist results produced by the scheduled local (domestic-network) selector."""
     target = request.trade_date.isoformat()
-    db.save_selections([
+    results = [
         {
             **item.model_dump(),
             "trade_date": target,
         }
         for item in request.items
-    ])
+    ]
+    if request.replace_existing:
+        db.replace_strategy_selections(target, request.items[0].strategy_name, results)
+    else:
+        db.save_selections(results)
     return APIResponse(data=SelectionImportResult(date=request.trade_date, count=len(request.items)))
 
 

@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
 
 from app.models import Base, JobRun, SelectionResult, Stock
 
@@ -24,35 +25,53 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def _save_selections(session: Session, results: list[dict[str, Any]]) -> None:
+    for item in results:
+        stocks.upsert(
+            session,
+            values={
+                "code": item.get("stock_code") or item["code"],
+                "name": item.get("stock_name") or item["name"],
+                "industry": item.get("industry"),
+                "is_st": item.get("is_st", False),
+            },
+            commit=False,
+        )
+        selection_results.upsert(
+            session,
+            values={
+                "stock_code": item.get("stock_code") or item["code"],
+                "trade_date": _as_date(item["trade_date"]),
+                "strategy_name": item.get("strategy_name") or "默认策略",
+                "signals": item.get("signals") or {
+                    "reasons": item.get("reasons", []),
+                    "indicators": item.get("indicators", {}),
+                    "price": item.get("price"),
+                    "change_pct": item.get("change_pct"),
+                },
+                "score": item.get("score"),
+            },
+            commit=False,
+        )
+
+
 def save_selections(results: list[dict[str, Any]]) -> None:
     with SessionLocal.begin() as session:
-        for item in results:
-            stocks.upsert(
-                session,
-                values={
-                    "code": item.get("stock_code") or item["code"],
-                    "name": item.get("stock_name") or item["name"],
-                    "industry": item.get("industry"),
-                    "is_st": item.get("is_st", False),
-                },
-                commit=False,
+        _save_selections(session, results)
+
+
+def replace_strategy_selections(
+    trade_date: str, strategy_name: str, results: list[dict[str, Any]]
+) -> None:
+    """Atomically replace exactly one strategy's results for one trade date."""
+    with SessionLocal.begin() as session:
+        session.execute(
+            delete(SelectionResult).where(
+                SelectionResult.trade_date == _as_date(trade_date),
+                SelectionResult.strategy_name == strategy_name,
             )
-            selection_results.upsert(
-                session,
-                values={
-                    "stock_code": item.get("stock_code") or item["code"],
-                    "trade_date": _as_date(item["trade_date"]),
-                    "strategy_name": item.get("strategy_name") or "默认策略",
-                    "signals": item.get("signals") or {
-                        "reasons": item.get("reasons", []),
-                        "indicators": item.get("indicators", {}),
-                        "price": item.get("price"),
-                        "change_pct": item.get("change_pct"),
-                    },
-                    "score": item.get("score"),
-                },
-                commit=False,
-            )
+        )
+        _save_selections(session, results)
 
 
 def _selection_dict(row: SelectionResult) -> dict[str, Any]:

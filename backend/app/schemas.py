@@ -137,6 +137,13 @@ class SelectionImportItem(BaseModel):
 class SelectionImportRequest(BaseModel):
     trade_date: date
     items: list[SelectionImportItem] = Field(min_length=1)
+    replace_existing: bool = False
+
+    @model_validator(mode="after")
+    def replacement_must_target_one_strategy(self) -> "SelectionImportRequest":
+        if self.replace_existing and len({item.strategy_name for item in self.items}) != 1:
+            raise ValueError("replace_existing requires all items to use one strategy_name")
+        return self
 
 
 class SelectionImportResult(BaseModel):

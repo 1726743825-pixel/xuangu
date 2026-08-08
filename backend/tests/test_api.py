@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app import db
+from app.db import compat as db_compat
 from app.main import app
 
 
@@ -89,6 +90,97 @@ def test_selection_import_persists_and_overwrites_same_strategy(monkeypatch):
     item = selections.json()["data"]["items"][0]
     assert item["score"] == 88.0
     assert item["reasons"] == ["本地更新"]
+
+
+def _selection_item(code: str, score: float, strategy_name: str = "默认策略") -> dict:
+    return {"code": code, "name": f"测试{code}", "score": score, "strategy_name": strategy_name}
+
+
+def test_selection_import_defaults_to_upsert_without_deleting_other_items(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    date_value = "2030-01-02"
+    with TestClient(app) as client:
+        seed = _import_payload(trade_date=date_value, items=[
+            _selection_item("300801", 70), _selection_item("300802", 71),
+        ])
+        assert client.post("/api/selections/import", json=seed, headers=headers).status_code == 200
+        update = _import_payload(trade_date=date_value, items=[_selection_item("300801", 90)])
+        assert client.post("/api/selections/import", json=update, headers=headers).status_code == 200
+        rows = client.get(f"/api/selections?date={date_value}").json()["data"]["items"]
+    assert {row["code"] for row in rows} == {"300801", "300802"}
+    assert next(row for row in rows if row["code"] == "300801")["score"] == 90
+
+
+def test_selection_import_replace_existing_replaces_only_target_strategy_and_date(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    target_date, other_date = "2030-01-03", "2030-01-04"
+    with TestClient(app) as client:
+        assert client.post("/api/selections/import", json=_import_payload(trade_date=target_date, items=[
+            _selection_item("300811", 70), _selection_item("300812", 71),
+            _selection_item("300813", 72, "其他策略"),
+        ]), headers=headers).status_code == 200
+        assert client.post("/api/selections/import", json=_import_payload(trade_date=other_date, items=[
+            _selection_item("300814", 73),
+        ]), headers=headers).status_code == 200
+        replacement = _import_payload(trade_date=target_date, replace_existing=True, items=[
+            _selection_item("300815", 95),
+        ])
+        assert client.post("/api/selections/import", json=replacement, headers=headers).status_code == 200
+        target_rows = client.get(f"/api/selections?date={target_date}").json()["data"]["items"]
+        other_rows = client.get(f"/api/selections?date={other_date}").json()["data"]["items"]
+    assert {row["code"] for row in target_rows} == {"300813", "300815"}
+    assert {row["code"] for row in other_rows} == {"300814"}
+
+
+def test_selection_import_replace_rejects_empty_unauthorised_and_multi_strategy_without_deleting(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    date_value = "2030-01-05"
+    with TestClient(app) as client:
+        assert client.post("/api/selections/import", json=_import_payload(trade_date=date_value, items=[
+            _selection_item("300821", 80),
+        ]), headers=headers).status_code == 200
+        assert client.post("/api/selections/import", json={
+            "trade_date": date_value, "replace_existing": True, "items": [],
+        }, headers=headers).status_code == 422
+        assert client.post("/api/selections/import", json=_import_payload(
+            trade_date=date_value, replace_existing=True,
+            items=[_selection_item("300822", 80), _selection_item("300823", 80, "其他策略")],
+        ), headers=headers).status_code == 422
+        assert client.post("/api/selections/import", json=_import_payload(
+            trade_date=date_value, replace_existing=True, items=[_selection_item("300824", 80)],
+        )).status_code == 401
+        rows = client.get(f"/api/selections?date={date_value}").json()["data"]["items"]
+    assert [row["code"] for row in rows] == ["300821"]
+
+
+def test_selection_import_replace_rolls_back_delete_when_write_fails(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    date_value = "2030-01-06"
+    with TestClient(app) as client:
+        assert client.post("/api/selections/import", json=_import_payload(trade_date=date_value, items=[
+            _selection_item("300831", 80),
+        ]), headers=headers).status_code == 200
+
+    original_upsert = db_compat.selection_results.upsert
+
+    def fail_second_write(session, *, values, commit=True):
+        if values["stock_code"] == "300833":
+            raise RuntimeError("forced write failure")
+        return original_upsert(session, values=values, commit=commit)
+
+    monkeypatch.setattr(db_compat.selection_results, "upsert", fail_second_write)
+    failed = _import_payload(trade_date=date_value, replace_existing=True, items=[
+        _selection_item("300832", 90), _selection_item("300833", 91),
+    ])
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/api/selections/import", json=failed, headers=headers)
+        rows = client.get(f"/api/selections?date={date_value}").json()["data"]["items"]
+    assert response.status_code == 500
+    assert [row["code"] for row in rows] == ["300831"]
 
 
 def test_stock_kline_returns_empty_when_only_stock_master_exists():
