@@ -67,10 +67,11 @@ def test_import_uses_actual_trade_date_emitted_by_weekend_selector(monkeypatch):
 
 def test_main_success_log_uses_actual_trade_date(monkeypatch, capsys):
     monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
-    monkeypatch.setattr(local_import, "_import_selection_run", lambda _: (10, "2026-08-07"))
+    monkeypatch.setattr(local_import, "_import_selection_run", lambda _: local_import.SelectionImportRun(10, "2026-08-07", _items("")))
+    monkeypatch.setattr(local_import, "import_quote_history", lambda *_: 120)
 
     assert local_import.main(["--trade-date", "2026-08-08", "--env-file", "unused.env"]) == 0
-    assert "trade_date=2026-08-07, count=10" in capsys.readouterr().out
+    assert "trade_date=2026-08-07, selections=10, quotes=120" in capsys.readouterr().out
 
 
 def test_import_local_selection_rejects_missing_token(monkeypatch):
@@ -91,3 +92,55 @@ def test_import_local_selection_reports_http_failure(monkeypatch):
 
     with pytest.raises(local_import.SelectionImportError, match="HTTP 503"):
         local_import.import_selections("2026-08-07", selector=_items, post=post)
+
+
+def _quote_rows(*_, **__):
+    return [
+        {"code": "600519", "name": "贵州茅台", "trade_date": "2026-08-06", "open": 1500, "high": 1520, "low": 1490, "close": 1510, "volume": 1000},
+        {"code": "600519", "name": "贵州茅台", "trade_date": "2026-08-07", "open": 1510, "high": 1530, "low": 1500, "close": 1525, "volume": 1200},
+    ]
+
+
+def test_import_quote_history_normalises_and_posts_real_rows(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret")
+    captured = {}
+
+    def post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response(2)
+
+    count = local_import.import_quote_history("2026-08-07", _items(""), history_loader=_quote_rows, post=post)
+
+    assert count == 2
+    assert captured["url"] == "https://example.test/api/quotes/import"
+    assert captured["json"] == {"quotes": [
+        {"stock_code": "600519", "stock_name": "贵州茅台", "trade_date": "2026-08-06", "open": 1500.0, "high": 1520.0, "low": 1490.0, "close": 1510.0, "volume": 1000.0},
+        {"stock_code": "600519", "stock_name": "贵州茅台", "trade_date": "2026-08-07", "open": 1510.0, "high": 1530.0, "low": 1500.0, "close": 1525.0, "volume": 1200.0},
+    ]}
+
+
+def test_import_quote_history_all_missing_fails_and_partial_missing_continues(monkeypatch, capsys):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret")
+    items = _items("") + [{"code": "300001", "name": "特锐德", "score": 80, "trade_date": "2026-08-07"}]
+
+    assert local_import.import_quote_history("2026-08-07", items, history_loader=_quote_rows, post=lambda *_args, **_kwargs: _Response(2)) == 2
+    assert "300001" in capsys.readouterr().err
+    with pytest.raises(local_import.SelectionImportError, match="所有入选股票"):
+        local_import.import_quote_history("2026-08-07", _items(""), history_loader=lambda *_args, **_kwargs: [])
+
+
+def test_quote_import_failure_does_not_leak_token(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
+    request = httpx.Request("POST", "https://example.test/api/quotes/import")
+    response = httpx.Response(503, request=request)
+
+    def post(*_args, **_kwargs):
+        raise httpx.HTTPStatusError("unavailable", request=request, response=response)
+
+    with pytest.raises(local_import.SelectionImportError, match="日K导入接口返回 HTTP 503") as error:
+        local_import.import_quote_history("2026-08-07", _items(""), history_loader=_quote_rows, post=post)
+    assert "secret-not-to-print" not in str(error.value)
