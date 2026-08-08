@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...db.session import get_db
+from ... import db
 from ...data.market_data import latest_trading_date
 from ...integrations.market_adapter import get_kline, get_quote
 from ...jobs import execute_quote_sync, execute_selection
@@ -21,6 +22,8 @@ from ...schemas import (
     Quote,
     RunSelectionAccepted,
     RunSelectionRequest,
+    SelectionImportRequest,
+    SelectionImportResult,
     SelectionPage,
     SelectionResult,
     StockDetail,
@@ -36,7 +39,7 @@ def _selection_schema(row: SelectionResultModel) -> SelectionResult:
     return SelectionResult(
         code=row.stock_code,
         name=row.stock.name,
-        trade_date=row.trade_date,
+        trade_date=row.trade_date.isoformat(),
         price=signals.get("price"),
         change_pct=signals.get("change_pct"),
         score=row.score,
@@ -108,6 +111,23 @@ def run_selection(
     target = request.trade_date if request and request.trade_date else date.today()
     background_tasks.add_task(_run_selection_in_background, target)
     return APIResponse(data=RunSelectionAccepted(status="accepted", date=target, message="选股任务已提交"))
+
+
+@router.post("/selections/import", response_model=APIResponse[SelectionImportResult])
+def import_selections(
+    request: SelectionImportRequest,
+    _: None = Depends(_require_job_token),
+) -> APIResponse[SelectionImportResult]:
+    """Persist results produced by the scheduled local (domestic-network) selector."""
+    target = request.trade_date.isoformat()
+    db.save_selections([
+        {
+            **item.model_dump(),
+            "trade_date": target,
+        }
+        for item in request.items
+    ])
+    return APIResponse(data=SelectionImportResult(date=request.trade_date, count=len(request.items)))
 
 
 @router.post("/quotes/sync", response_model=APIResponse[RunSelectionAccepted], status_code=status.HTTP_202_ACCEPTED)

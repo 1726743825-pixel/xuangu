@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from math import isfinite
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 DataT = TypeVar("DataT")
@@ -110,3 +111,34 @@ class RunSelectionAccepted(BaseModel):
     status: str
     date: date
     message: str
+
+
+class SelectionImportItem(BaseModel):
+    """One locally generated selection result accepted by the import endpoint."""
+
+    code: str = Field(min_length=1, max_length=16)
+    name: str = Field(min_length=1, max_length=128)
+    score: float
+    price: float | None = None
+    change_pct: float | None = None
+    strategy_name: str = Field(default="默认策略", min_length=1, max_length=128)
+    industry: str | None = Field(default=None, max_length=128)
+    reasons: list[str] = Field(default_factory=list)
+    indicators: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("score")
+    @classmethod
+    def score_must_be_finite_and_in_range(cls, value: float) -> float:
+        if not isfinite(value) or not 0 <= value <= 100:
+            raise ValueError("score must be a finite number between 0 and 100")
+        return value
+
+
+class SelectionImportRequest(BaseModel):
+    trade_date: date
+    items: list[SelectionImportItem] = Field(min_length=1)
+
+
+class SelectionImportResult(BaseModel):
+    date: date
+    count: int
