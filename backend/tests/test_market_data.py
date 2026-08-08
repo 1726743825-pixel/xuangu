@@ -4,22 +4,123 @@ import httpx
 from app.data import market_data
 
 
-def test_sync_stock_list_normalises_and_marks_st(monkeypatch):
+def _tencent_quote_line(symbol: str, code: str, name: str) -> str:
+    values = ["1", name, code] + [""] * 50
+    return f'v_{symbol}="{"~".join(values)}";'
+
+
+def test_tencent_stock_list_normalises_and_marks_st(monkeypatch):
     monkeypatch.setattr(
         market_data,
-        "_fetch_market_pages",
-        lambda fields: [
-            {"f12": "600000", "f13": 1, "f14": "浦发银行", "f26": 19991110, "f100": "银行"},
-            {"f12": "300001", "f13": 0, "f14": "*ST测试", "f26": "20091030", "f100": "软件"},
-        ],
+        "_universe_prefixes",
+        lambda: (("600", "300"), ("688", "8", "4", "43")),
+    )
+    text = "\n".join(
+        [
+            _tencent_quote_line("sh600000", "600000", "浦发银行"),
+            _tencent_quote_line("sz300001", "300001", "*ST测试"),
+        ]
+    )
+
+    rows = market_data._parse_tencent_stock_list(text)
+
+    assert rows[0]["code"] == "600000"
+    assert rows[0]["exchange"] == "SH"
+    assert rows[1]["code"] == "300001"
+    assert rows[1]["is_st"] is True
+    assert all(row["source"] == "tencent" for row in rows)
+
+
+def test_tencent_stock_list_applies_allowed_and_excluded_prefixes(monkeypatch):
+    monkeypatch.setattr(
+        market_data,
+        "_universe_prefixes",
+        lambda: (("600", "601", "603", "000", "001", "002", "300", "301"),
+                 ("688", "8", "4", "43")),
+    )
+    text = "\n".join(
+        _tencent_quote_line(f"sh{code}" if code.startswith("6") else f"sz{code}", code, f"股票{code}")
+        for code in ("600000", "601318", "603259", "000001", "001979", "002594",
+                     "300750", "301269", "688001", "830001", "430001")
+    )
+
+    rows = market_data._parse_tencent_stock_list(text)
+    codes = {row["code"] for row in rows}
+
+    assert codes == {"600000", "601318", "603259", "000001", "001979", "002594",
+                     "300750", "301269"}
+    assert not any(code.startswith(("688", "8", "4", "43")) for code in codes)
+
+
+def test_sync_stock_list_uses_builtin_pool_after_all_remote_sources_fail(monkeypatch):
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+    monkeypatch.setattr(
+        market_data,
+        "_universe_prefixes",
+        lambda: (("600", "300"), ("688", "8", "4", "43")),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "_fetch_tencent_stock_list",
+        lambda: (_ for _ in ()).throw(market_data.MarketDataError("Tencent unavailable")),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "_eastmoney_stock_list",
+        lambda: (_ for _ in ()).throw(market_data.MarketDataError("Eastmoney blocked")),
     )
 
     rows = market_data.sync_stock_list()
 
-    assert rows[0]["exchange"] == "SZ"
-    assert rows[0]["is_st"] is True
-    assert rows[0]["list_date"] == "2009-10-30"
-    assert rows[1]["industry"] == "银行"
+    assert rows
+    assert {row["source"] for row in rows} == {"builtin-prefix-fallback"}
+    assert all(row["code"].startswith(("600", "300")) for row in rows)
+    assert {row["code"][:3] for row in rows} == {"600", "300"}
+
+
+def test_sync_stock_list_prefers_tencent_without_touching_eastmoney(monkeypatch):
+    expected = [{"code": "600000", "name": "浦发银行", "source": "tencent"}]
+    monkeypatch.setattr(market_data, "_fetch_tencent_stock_list", lambda: expected)
+    monkeypatch.setattr(
+        market_data,
+        "_eastmoney_stock_list",
+        lambda: (_ for _ in ()).throw(AssertionError("Eastmoney must remain a fallback")),
+    )
+
+    assert market_data.sync_stock_list() == expected
+
+
+def test_builtin_pool_keeps_tencent_kline_sync_running(monkeypatch):
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+    monkeypatch.setattr(
+        market_data,
+        "_universe_prefixes",
+        lambda: (("600",), ("688", "8", "4", "43")),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "_fetch_tencent_stock_list",
+        lambda: (_ for _ in ()).throw(market_data.MarketDataError("quote list unavailable")),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "_eastmoney_stock_list",
+        lambda: (_ for _ in ()).throw(market_data.MarketDataError("Eastmoney blocked")),
+    )
+    monkeypatch.setattr(
+        market_data,
+        "_get_tencent_kline",
+        lambda code, period, limit=640: [
+            {"datetime": "2026-08-07", "open": 10, "high": 11, "low": 9,
+             "close": 10.5, "volume": 100, "amount": 1000}
+        ],
+    )
+
+    rows = market_data.sync_quote_history("2026-08-07", limit=80)
+
+    assert rows
+    assert {row["code"] for row in rows} == {"600000", "600036", "600519"}
+    assert {row["source"] for row in rows} == {"tencent-qfq"}
 
 
 def test_clean_snapshot_handles_suspension_and_limit_rules():

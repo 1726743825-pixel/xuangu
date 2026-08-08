@@ -4,14 +4,16 @@ The module deliberately does not know about the application's database.  Its
 public functions return JSON-friendly ``list[dict]`` values that can be handed
 to a persistence layer by the caller.
 
-Data-source policy follows the project's ``a-stock-data`` skill:
+Data-source policy follows the Apache-2.0 ``a-stock-data`` project:
 
-* Eastmoney's list endpoint is used for the complete security master and the
-  latest whole-market snapshot.  Requests are serialized and throttled.
-* Tencent (low blocking risk) is preferred for daily/weekly/monthly single-
-  stock K-lines; Eastmoney supplies intraday K-lines and is the fallback.
+* Tencent HTTP quotes are the default security-master source and Tencent is
+  preferred for daily/weekly/monthly single-stock K-lines.
+* Eastmoney is a last-resort security-master source and the intraday K-line
+  fallback.  Its requests remain serialized and throttled.
 * Tushare's HTTP API is an optional fallback for an exact historical
   whole-market trading date.  Set ``TUSHARE_TOKEN`` to enable it.
+
+Source/reference: https://github.com/simonlin1212/a-stock-data (Apache-2.0).
 
 No API key is required for the default paths.
 """
@@ -21,8 +23,10 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+import json
 import logging
 import os
+from pathlib import Path
 import random
 import threading
 import time
@@ -39,8 +43,27 @@ USER_AGENT = (
 )
 EASTMONEY_LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 EASTMONEY_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
 TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 TUSHARE_URL = "https://api.tushare.pro"
+STRATEGY_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "strategy.json"
+
+_DEFAULT_ALLOWED_PREFIXES = ("600", "601", "603", "000", "001", "002", "300", "301")
+_DEFAULT_EXCLUDED_PREFIXES = ("688", "8", "4", "43")
+# A small, liquid, code-only emergency universe.  The active subset is selected
+# from strategy.json's allowed/excluded prefixes at runtime; names are filled by
+# Tencent K-line metadata when available.  Keeping this bounded prevents a
+# Railway recovery job from issuing thousands of speculative K-line requests.
+_BUILTIN_FALLBACK_STOCKS = {
+    "600000": "浦发银行", "600036": "招商银行", "600519": "贵州茅台",
+    "601318": "中国平安", "601398": "工商银行", "601857": "中国石油",
+    "603259": "药明康德", "603501": "韦尔股份", "603986": "兆易创新",
+    "000001": "平安银行", "000333": "美的集团", "000858": "五粮液",
+    "001979": "招商蛇口", "001696": "宗申动力", "001872": "招商港口",
+    "002230": "科大讯飞", "002475": "立讯精密", "002594": "比亚迪",
+    "300014": "亿纬锂能", "300308": "中际旭创", "300750": "宁德时代",
+    "301236": "软通动力", "301269": "华大九天", "301308": "江波龙",
+}
 
 # Main board, ChiNext, STAR Market and Beijing Stock Exchange A shares.
 _A_SHARE_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
@@ -134,6 +157,31 @@ def _request_json(
                 _sleep_before_retry(attempt)
 
     raise MarketDataError(f"request failed after {retries} attempts: {url}") from last_error
+
+
+def _request_text(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    retries: int = 3,
+    encoding: str = "utf-8",
+) -> str:
+    """Request text with the same retry policy used by JSON endpoints."""
+    last_error: Exception | None = None
+    for attempt in range(retries):
+        try:
+            response = _http_client.get(url, headers=headers)
+            if response.status_code in _RETRYABLE_STATUS and attempt + 1 < retries:
+                _sleep_before_retry(attempt, response.headers.get("Retry-After"))
+                continue
+            response.raise_for_status()
+            return response.content.decode(encoding, errors="replace")
+        except (httpx.HTTPError, UnicodeError) as exc:
+            last_error = exc
+            if attempt + 1 < retries:
+                _sleep_before_retry(attempt)
+    display_url = f"{TENCENT_QUOTE_URL}<batch>" if url.startswith(TENCENT_QUOTE_URL) else url
+    raise MarketDataError(f"request failed after {retries} attempts: {display_url}") from last_error
 
 
 def _eastmoney_request(
@@ -301,24 +349,118 @@ def _fetch_market_pages(fields: str = _QUOTE_FIELDS) -> list[dict[str, Any]]:
     return output
 
 
-def sync_stock_list() -> list[dict[str, Any]]:
-    """Fetch and clean the complete A-share security master.
-
-    Each row contains at least ``code``, ``name`` and ``industry`` plus market,
-    listing date and ST status.  Network exhaustion is handled as an empty list
-    so scheduled jobs can retry later without partially touching the database.
-    """
+def _universe_prefixes() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Load the data-layer universe from the strategy configuration."""
     try:
-        raw_rows = _fetch_market_pages("f12,f13,f14,f26,f100")
-    except MarketDataError as exc:
-        logger.warning("stock-list sync failed: %s", exc)
-        if os.getenv("TUSHARE_TOKEN", "").strip():
-            try:
-                return _tushare_stock_list()
-            except MarketDataError as fallback_exc:
-                logger.warning("Tushare stock-list fallback failed: %s", fallback_exc)
-        return []
+        payload = json.loads(STRATEGY_CONFIG_PATH.read_text(encoding="utf-8"))
+        universe = payload["builtin"]["universe"]
+        allowed = tuple(str(value) for value in universe["allowed_prefixes"] if str(value))
+        excluded = tuple(str(value) for value in universe["excluded_prefixes"] if str(value))
+        if allowed:
+            return allowed, excluded
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        logger.error("strategy universe config unavailable; using safe defaults: %s", exc)
+    return _DEFAULT_ALLOWED_PREFIXES, _DEFAULT_EXCLUDED_PREFIXES
 
+
+def _is_target_code(
+    code: str,
+    allowed_prefixes: tuple[str, ...] | None = None,
+    excluded_prefixes: tuple[str, ...] | None = None,
+) -> bool:
+    allowed, excluded = (
+        (allowed_prefixes, excluded_prefixes or ())
+        if allowed_prefixes is not None
+        else _universe_prefixes()
+    )
+    return code.startswith(allowed) and not code.startswith(excluded)
+
+
+def _candidate_codes() -> list[str]:
+    """Expand configured three-digit prefixes for Tencent batch validation."""
+    allowed, excluded = _universe_prefixes()
+    candidates: set[str] = set()
+    for prefix in allowed:
+        if not prefix.isdigit() or len(prefix) != 3:
+            logger.error("ignoring unsupported universe prefix %r; expected three digits", prefix)
+            continue
+        for suffix in range(1000):
+            code = f"{prefix}{suffix:03d}"
+            if not code.startswith(excluded):
+                candidates.add(code)
+    return sorted(candidates)
+
+
+def _parse_tencent_stock_list(text: str) -> list[dict[str, Any]]:
+    """Parse Tencent's GBK ``~``-delimited batch quote response."""
+    allowed, excluded = _universe_prefixes()
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for line in text.split(";"):
+        if '="' not in line:
+            continue
+        body = line.split('="', 1)[1].rsplit('"', 1)[0]
+        values = body.split("~")
+        if len(values) < 53:
+            continue
+        try:
+            code = _normalise_code(values[2])
+        except ValueError:
+            continue
+        name = values[1].strip()
+        if not name or code in seen or not _is_target_code(code, allowed, excluded):
+            continue
+        seen.add(code)
+        output.append(
+            {
+                "code": code,
+                "name": name,
+                "industry": None,
+                "exchange": _exchange(code),
+                "list_date": None,
+                "is_st": _is_st_name(name),
+                "source": "tencent",
+            }
+        )
+    return output
+
+
+def _fetch_tencent_stock_list() -> list[dict[str, Any]]:
+    """Discover the configured A-share universe through Tencent HTTP quotes.
+
+    Tencent does not expose a documented security-master endpoint.  We expand
+    the eight configured three-digit ranges and validate candidates in batches;
+    nonexistent codes are simply omitted from the quote response.
+
+    Endpoint format and source priority reference:
+    https://github.com/simonlin1212/a-stock-data (Apache-2.0).
+    """
+    candidates = _candidate_codes()
+    batch_size = max(50, min(int(os.getenv("TENCENT_LIST_BATCH_SIZE", "500")), 500))
+    batches = [candidates[index:index + batch_size] for index in range(0, len(candidates), batch_size)]
+
+    def fetch(codes: list[str]) -> list[dict[str, Any]]:
+        symbols = ",".join(_tencent_symbol(code) for code in codes)
+        text = _request_text(
+            TENCENT_QUOTE_URL + symbols,
+            headers={"Referer": "https://gu.qq.com/"},
+            encoding="gbk",
+        )
+        return _parse_tencent_stock_list(text)
+
+    workers = max(1, min(int(os.getenv("TENCENT_LIST_WORKERS", "4")), 8))
+    output: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tencent-list") as pool:
+        futures = [pool.submit(fetch, batch) for batch in batches]
+        for future in as_completed(futures):
+            output.extend(future.result())
+    return sorted({item["code"]: item for item in output}.values(), key=lambda item: item["code"])
+
+
+def _eastmoney_stock_list() -> list[dict[str, Any]]:
+    """Last-resort security master for networks where Eastmoney is reachable."""
+    raw_rows = _fetch_market_pages("f12,f13,f14,f26,f100")
+    allowed, excluded = _universe_prefixes()
     stocks: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in raw_rows:
@@ -326,7 +468,7 @@ def sync_stock_list() -> list[dict[str, Any]]:
             code = _normalise_code(str(row.get("f12", "")))
         except ValueError:
             continue
-        if code in seen:
+        if code in seen or not _is_target_code(code, allowed, excluded):
             continue
         seen.add(code)
         name = str(row.get("f14") or "").strip()
@@ -344,9 +486,72 @@ def sync_stock_list() -> list[dict[str, Any]]:
                 "exchange": _exchange(code, row.get("f13")),
                 "list_date": list_date,
                 "is_st": _is_st_name(name),
+                "source": "eastmoney",
             }
         )
     return sorted(stocks, key=lambda item: item["code"])
+
+
+def _builtin_stock_pool() -> list[dict[str, Any]]:
+    """Return a bounded emergency pool derived from strategy.json prefixes."""
+    allowed, excluded = _universe_prefixes()
+    codes = [
+        code for code in _BUILTIN_FALLBACK_STOCKS
+        if _is_target_code(code, allowed, excluded)
+    ]
+    return [
+        {
+            "code": code,
+            "name": _BUILTIN_FALLBACK_STOCKS[code],
+            "industry": None,
+            "exchange": _exchange(code),
+            "list_date": None,
+            "is_st": False,
+            "source": "builtin-prefix-fallback",
+        }
+        for code in sorted(codes)
+    ]
+
+
+def sync_stock_list() -> list[dict[str, Any]]:
+    """Fetch the configured A-share security master without blocking K-line sync.
+
+    Each row contains at least ``code``, ``name`` and ``industry`` plus market,
+    listing date and ST status.  Source order is Tencent, optional Tushare,
+    Eastmoney (last external fallback), then a non-empty built-in emergency pool
+    derived from ``strategy.json``.
+    """
+    try:
+        stocks = _fetch_tencent_stock_list()
+        if stocks:
+            return stocks
+    except MarketDataError as exc:
+        logger.warning("Tencent stock-list sync failed: %s", exc)
+    else:
+        logger.warning("Tencent stock-list sync returned no valid target stocks")
+
+    if os.getenv("TUSHARE_TOKEN", "").strip():
+        try:
+            stocks = _tushare_stock_list()
+            if stocks:
+                allowed, excluded = _universe_prefixes()
+                return [item for item in stocks if _is_target_code(item["code"], allowed, excluded)]
+        except MarketDataError as exc:
+            logger.warning("Tushare stock-list fallback failed: %s", exc)
+
+    try:
+        stocks = _eastmoney_stock_list()
+        if stocks:
+            return stocks
+    except MarketDataError as exc:
+        logger.warning("Eastmoney last-resort stock-list sync failed: %s", exc)
+
+    stocks = _builtin_stock_pool()
+    logger.error(
+        "all remote stock-list sources failed; continuing with %d configured-prefix fallback stocks",
+        len(stocks),
+    )
+    return stocks
 
 
 def _tushare_stock_list() -> list[dict[str, Any]]:
@@ -574,10 +779,6 @@ def sync_quote_history(
     return _tencent_history_for_universe(
         target, limit=max(limit, 80), only_target=False, universe=universe
     )
-
-
-def _is_target_code(code: str) -> bool:
-    return code.startswith(("600", "601", "603", "000", "001", "002", "300", "301"))
 
 
 def _tencent_history_for_universe(
