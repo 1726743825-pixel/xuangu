@@ -24,9 +24,15 @@ npm run dev
 
 打开 http://localhost:3000 。后端 API 文档位于 http://localhost:8000/docs。
 
+## 已放入的现有脚本
+
+你提供的 Node.js 选股脚本和配置已复制到 `backend/existing/source/`，包括行情数据源、三个选股脚本、策略规格和政策评分文件。原目录 `D:\Program Files\xuangu` 未被修改。
+
+这些脚本当前作为原始资产保存，网站仍使用适配器运行，避免启动网站时自动触发外部行情请求。下一步接入时优先使用 `stock_screener_latest.js`，再将其输出转换为网站的统一结果格式。
+
 ## 接入你的现有脚本
 
-将选股脚本放到 `backend/existing/selection_script.py`，并提供：
+如果希望直接接入 Python 版本，可将选股脚本命名为 `selection_script.py` 放到 `backend/existing/`，并提供：
 
 ```python
 def run_selection(trade_date: str | None = None) -> list[dict]:
