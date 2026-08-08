@@ -20,6 +20,7 @@ No API key is required for the default paths.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -45,6 +46,9 @@ EASTMONEY_LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 EASTMONEY_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
 TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+BAIDU_KLINE_URL = "https://finance.pae.baidu.com/selfselect/getstockquotation"
+SINA_KLINE_URL = "https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData"
+SINA_QFQ_URL = "https://finance.sina.com.cn/realstock/company/{symbol}/qfq.js"
 TUSHARE_URL = "https://api.tushare.pro"
 STRATEGY_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "strategy.json"
 
@@ -101,6 +105,8 @@ _http_client = httpx.Client(
 _eastmoney_lock = threading.Lock()
 _eastmoney_last_call = 0.0
 _eastmoney_min_interval = float(os.getenv("EASTMONEY_MIN_INTERVAL", "1.0"))
+_quote_source_lock = threading.Lock()
+_quote_source_health: dict[str, dict[str, float]] = {}
 
 
 class MarketDataError(RuntimeError):
@@ -236,6 +242,58 @@ def _eastmoney_secid(code: str) -> str:
 
 def _tencent_symbol(code: str) -> str:
     return f"{_exchange(code).lower()}{code}"
+
+
+def _quote_sources() -> tuple[str, ...]:
+    """Return the configured K-line source order.
+
+    ``tushare`` is ignored unless ``TUSHARE_TOKEN`` is configured.  Unknown
+    values are logged and skipped so a typo cannot silently change semantics.
+    """
+    supported = {"tencent", "baidu", "sina", "tushare"}
+    configured = os.getenv("QUOTE_SOURCES", "tencent,baidu,sina,tushare")
+    sources: list[str] = []
+    for raw in configured.split(","):
+        source = raw.strip().lower()
+        if not source or source in sources:
+            continue
+        if source not in supported:
+            logger.error("ignoring unsupported quote source %r", source)
+            continue
+        if source == "tushare" and not os.getenv("TUSHARE_TOKEN", "").strip():
+            continue
+        sources.append(source)
+    if not sources:
+        raise MarketDataError("QUOTE_SOURCES contains no enabled K-line source")
+    return tuple(sources)
+
+
+def _source_available(source: str) -> bool:
+    with _quote_source_lock:
+        state = _quote_source_health.get(source) or {}
+        return time.monotonic() >= state.get("disabled_until", 0.0)
+
+
+def _record_source_result(source: str, success: bool) -> None:
+    """Apply a small cross-stock circuit breaker for globally blocked sources."""
+    threshold = max(1, int(os.getenv("QUOTE_SOURCE_FAILURE_THRESHOLD", "3")))
+    cooldown = max(1.0, float(os.getenv("QUOTE_SOURCE_COOLDOWN", "300")))
+    with _quote_source_lock:
+        state = _quote_source_health.setdefault(
+            source, {"failures": 0.0, "disabled_until": 0.0}
+        )
+        if success:
+            state.update({"failures": 0.0, "disabled_until": 0.0})
+            return
+        state["failures"] += 1
+        if state["failures"] >= threshold:
+            state["disabled_until"] = time.monotonic() + cooldown
+            logger.error(
+                "quote source %s disabled for %.0fs after %d consecutive failures",
+                source,
+                cooldown,
+                int(state["failures"]),
+            )
 
 
 def _is_st_name(name: Any) -> bool:
@@ -680,17 +738,16 @@ def _tushare_daily(trade_date: str) -> list[dict[str, Any]]:
 
 
 def sync_daily_quotes(trade_date: str) -> list[dict[str, Any]]:
-    """Fetch target-universe daily bars for one date from Tencent qfq K-lines.
+    """Fetch target-universe daily bars through the configured source rotation.
 
-    Tencent is deliberately the primary source here: unlike the former
-    Eastmoney snapshot path, it is suitable for overseas scheduled workers and
-    does not require a Tushare token.  The security master is metadata only;
-    OHLCV always comes from Tencent's HTTP K-line endpoint.
+    ``QUOTE_SOURCES`` controls priority; its default is
+    ``tencent,baidu,sina,tushare``.  Each provider returns normalized qfq OHLCV
+    and a failed stock never aborts the rest of the universe.
     """
     day = _parse_date(trade_date)
     if _is_obviously_non_trading_day(day):
         return []
-    return _tencent_history_for_universe(trade_date, limit=8, only_target=True)
+    return _quote_history_for_universe(trade_date, limit=8, only_target=True)
 
 
 def latest_trading_date(reference: date | None = None) -> str:
@@ -704,20 +761,20 @@ def latest_trading_date(reference: date | None = None) -> str:
 def sync_quote_history(
     trade_date: str | None = None, limit: int = 160, universe: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
-    """Fetch enough Tencent qfq daily history to prime the strategy indicators."""
+    """Fetch enough rotated-source qfq history to prime strategy indicators."""
     target = trade_date or latest_trading_date()
     day = _parse_date(target)
     if _is_obviously_non_trading_day(day):
         return []
-    return _tencent_history_for_universe(
+    return _quote_history_for_universe(
         target, limit=max(limit, 80), only_target=False, universe=universe
     )
 
 
-def _tencent_history_for_universe(
+def _quote_history_for_universe(
     trade_date: str, *, limit: int, only_target: bool, universe: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
-    """Fetch Tencent qfq bars for every configured A-share universe code.
+    """Fetch normalized qfq bars for every configured A-share universe code.
 
     The master list is cached by callers in the database after the first run;
     workers are bounded to avoid overloading the free upstream endpoint.
@@ -729,9 +786,14 @@ def _tencent_history_for_universe(
 
     def fetch(stock: dict[str, Any]) -> list[dict[str, Any]]:
         try:
-            bars = _get_tencent_kline(stock["code"], "day", limit=limit)
+            bars = _get_rotating_kline(stock["code"], "day", limit=limit)
         except MarketDataError as exc:
-            logger.warning("Tencent daily K-line failed for %s: %s", stock["code"], exc)
+            logger.error("all daily K-line sources failed for %s: %s", stock["code"], exc)
+            return []
+        except Exception:
+            # A malformed response for one security must never cancel all
+            # remaining futures in a scheduled full-market synchronization.
+            logger.exception("unexpected daily K-line failure for %s", stock["code"])
             return []
         rows: list[dict[str, Any]] = []
         for bar in bars:
@@ -753,7 +815,7 @@ def _tencent_history_for_universe(
                     "close": bar["close"],
                     "volume": bar.get("volume") or 0,
                     "amount": bar.get("amount"),
-                    "source": "tencent-qfq",
+                    "source": bar.get("source") or "unknown-qfq",
                 }
             )
         return rows
@@ -770,7 +832,9 @@ def _tencent_history_for_universe(
 def _parse_tencent_kline(code: str, period: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
     symbol = _tencent_symbol(code)
     block = (payload.get("data") or {}).get(symbol) or {}
-    rows = block.get(f"qfq{period}") or block.get(period) or []
+    # Never silently accept an unadjusted block: the downstream strategy mixes
+    # providers and therefore requires every source to expose qfq prices.
+    rows = block.get(f"qfq{period}") or []
     quote = block.get("qt") or {}
     quote_values = quote.get(symbol) if isinstance(quote, dict) else None
     current_name = quote_values[1] if isinstance(quote_values, list) and len(quote_values) > 1 else ""
@@ -796,7 +860,7 @@ def _parse_tencent_kline(code: str, period: str, payload: dict[str, Any]) -> lis
             change=None,
             previous_close=previous,
             is_st=is_st,
-            source="tencent",
+            source="tencent-qfq",
         )
         output.append(item)
         if close is not None:
@@ -877,6 +941,246 @@ def _get_tencent_kline(code: str, period: str, limit: int = 640) -> list[dict[st
     return _parse_tencent_kline(code, period, payload)
 
 
+def _get_baidu_kline(code: str, period: str, limit: int = 640) -> list[dict[str, Any]]:
+    """Fetch Baidu Gushitong daily K-lines, which use a qfq price series.
+
+    Response layout and headers follow a-stock-data (Apache-2.0).  Live
+    cross-checks against Tencent qfqday confirm the same adjusted OHLC values.
+    """
+    if period != "day":
+        return []
+    start = date.today() - timedelta(days=max(limit * 3, 180))
+    payload = _request_json(
+        "GET",
+        BAIDU_KLINE_URL,
+        params={
+            "all": "1",
+            "isIndex": "false",
+            "isBk": "false",
+            "isBlock": "false",
+            "isFutures": "false",
+            "isStock": "true",
+            "newFormat": "1",
+            "group": "quotation_kline_ab",
+            "finClientType": "pc",
+            "code": code,
+            "start_time": start.strftime("%Y%m%d"),
+            "ktype": "1",
+        },
+        headers={
+            "Accept": "application/vnd.finance-web.v1+json",
+            "Origin": "https://gushitong.baidu.com",
+            "Referer": "https://gushitong.baidu.com/",
+        },
+    )
+    if str(payload.get("ResultCode", -1)) != "0":
+        raise MarketDataError(f"Baidu K-line error: {payload.get('ResultCode')}")
+    market_data = ((payload.get("Result") or {}).get("newMarketData") or {})
+    keys = market_data.get("keys") or []
+    raw_rows = (market_data.get("marketData") or "").split(";")
+    output: list[dict[str, Any]] = []
+    for raw in raw_rows:
+        if not raw:
+            continue
+        values = raw.split(",")
+        row = dict(zip(keys, values))
+        moment = str(row.get("time") or "")[:10]
+        if len(moment) != 10:
+            continue
+        output.append(
+            _clean_kline_row(
+                code=code,
+                period="day",
+                moment=moment,
+                open_price=row.get("open"),
+                close=row.get("close"),
+                high=row.get("high"),
+                low=row.get("low"),
+                volume=row.get("volume"),
+                amount=row.get("amount"),
+                turnover_rate=row.get("turnoverratio"),
+                change_pct=row.get("ratio"),
+                change=row.get("range"),
+                previous_close=row.get("preClose"),
+                is_st=False,
+                source="baidu-qfq",
+            )
+        )
+    return output[-limit:]
+
+
+def _sina_qfq_factors(symbol: str) -> tuple[list[date], list[float]]:
+    text = _request_text(
+        SINA_QFQ_URL.format(symbol=symbol),
+        headers={"Referer": "https://finance.sina.com.cn/"},
+    )
+    try:
+        payload = json.loads(text[text.index("{"):text.rindex("}") + 1])
+        pairs = sorted(
+            (
+                datetime.strptime(str(item["d"]), "%Y-%m-%d").date(),
+                float(item["f"]),
+            )
+            for item in (payload.get("data") or [])
+        )
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise MarketDataError(f"invalid Sina qfq factors for {symbol}") from exc
+    if not pairs:
+        raise MarketDataError(f"Sina qfq factors unavailable for {symbol}")
+    return [item[0] for item in pairs], [item[1] for item in pairs]
+
+
+def _get_sina_kline(code: str, period: str, limit: int = 640) -> list[dict[str, Any]]:
+    """Fetch Sina raw daily bars and convert OHLC to forward-adjusted prices.
+
+    Sina's open K-line endpoint is unadjusted.  The qfq conversion follows the
+    public AKShare Sina implementation: each OHLC value is divided by the
+    forward-filled factor from Sina's ``qfq.js`` endpoint.  Volume remains in
+    shares and is never adjusted.
+    """
+    if period != "day":
+        return []
+    symbol = _tencent_symbol(code)
+    payload = _request_json(
+        "GET",
+        SINA_KLINE_URL,
+        params={"symbol": symbol, "scale": 240, "ma": "no", "datalen": limit},
+        headers={"Referer": "https://finance.sina.com.cn/"},
+    )
+    raw_rows = ((payload.get("result") or {}).get("data") or [])
+    factor_dates, factors = _sina_qfq_factors(symbol)
+    output: list[dict[str, Any]] = []
+    previous: float | None = None
+    for row in raw_rows:
+        try:
+            row_date = datetime.strptime(str(row.get("day"))[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            continue
+        factor_index = bisect_right(factor_dates, row_date) - 1
+        if factor_index < 0 or factors[factor_index] <= 0:
+            continue
+        factor = factors[factor_index]
+        adjusted = {
+            key: (_number(row.get(key)) / factor if _number(row.get(key)) is not None else None)
+            for key in ("open", "high", "low", "close")
+        }
+        item = _clean_kline_row(
+            code=code,
+            period="day",
+            moment=row_date.isoformat(),
+            open_price=adjusted["open"],
+            close=adjusted["close"],
+            high=adjusted["high"],
+            low=adjusted["low"],
+            volume=row.get("volume"),
+            amount=None,
+            turnover_rate=None,
+            change_pct=None,
+            change=None,
+            previous_close=previous,
+            is_st=False,
+            source="sina-qfq",
+        )
+        output.append(item)
+        previous = item["close"]
+    return output[-limit:]
+
+
+def _get_tushare_kline(code: str, period: str, limit: int = 640) -> list[dict[str, Any]]:
+    """Fetch Tushare daily bars and apply its adj_factor qfq formula."""
+    if period != "day" or not os.getenv("TUSHARE_TOKEN", "").strip():
+        return []
+    end = date.today()
+    start = end - timedelta(days=max(limit * 3, 365))
+    ts_code = f"{code}.{'SH' if _exchange(code) == 'SH' else 'SZ'}"
+    params = {
+        "ts_code": ts_code,
+        "start_date": start.strftime("%Y%m%d"),
+        "end_date": end.strftime("%Y%m%d"),
+    }
+    raw_rows = _tushare_call(
+        "daily",
+        params,
+        "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+    )
+    factor_rows = _tushare_call("adj_factor", params, "ts_code,trade_date,adj_factor")
+    factors = {
+        str(item.get("trade_date")): _number(item.get("adj_factor")) for item in factor_rows
+    }
+    valid_factor_dates = [key for key, value in factors.items() if value and value > 0]
+    if not raw_rows or not valid_factor_dates:
+        return []
+    latest_factor = factors[max(valid_factor_dates)]
+    output: list[dict[str, Any]] = []
+    previous: float | None = None
+    for row in sorted(raw_rows, key=lambda item: str(item.get("trade_date") or "")):
+        raw_date = str(row.get("trade_date") or "")
+        factor = factors.get(raw_date)
+        if not factor or factor <= 0 or len(raw_date) != 8:
+            continue
+        multiplier = factor / latest_factor
+        adjusted = {
+            key: (_number(row.get(key)) * multiplier if _number(row.get(key)) is not None else None)
+            for key in ("open", "high", "low", "close")
+        }
+        volume = _lots_to_shares(row.get("vol"))
+        amount = _number(row.get("amount"))
+        item = _clean_kline_row(
+            code=code,
+            period="day",
+            moment=f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}",
+            open_price=adjusted["open"],
+            close=adjusted["close"],
+            high=adjusted["high"],
+            low=adjusted["low"],
+            volume=volume,
+            amount=amount * 1000 if amount is not None else None,
+            turnover_rate=None,
+            change_pct=None,
+            change=None,
+            previous_close=previous,
+            is_st=False,
+            source="tushare-qfq",
+        )
+        output.append(item)
+        previous = item["close"]
+    return output[-limit:]
+
+
+def _get_rotating_kline(code: str, period: str, limit: int = 640) -> list[dict[str, Any]]:
+    """Try configured K-line sources in order until one returns usable bars."""
+    providers = {
+        "tencent": _get_tencent_kline,
+        "baidu": _get_baidu_kline,
+        "sina": _get_sina_kline,
+        "tushare": _get_tushare_kline,
+    }
+    errors: list[str] = []
+    for source in _quote_sources():
+        if not _source_available(source):
+            continue
+        try:
+            rows = providers[source](code, period, limit=limit)
+            if rows:
+                for row in rows:
+                    row.setdefault("source", f"{source}-qfq")
+                _record_source_result(source, True)
+                return rows
+            errors.append(f"{source}: empty")
+            _record_source_result(source, False)
+        except MarketDataError as exc:
+            _record_source_result(source, False)
+            errors.append(f"{source}: {exc}")
+            logger.warning("%s K-line failed for %s: %s", source, code, exc)
+        except Exception as exc:
+            _record_source_result(source, False)
+            errors.append(f"{source}: unexpected {type(exc).__name__}")
+            logger.exception("unexpected %s K-line failure for %s", source, code)
+    raise MarketDataError(
+        f"all configured K-line sources failed for {code}: {'; '.join(errors) or 'circuit open'}"
+    )
+
+
 def _get_eastmoney_kline(code: str, period: str, klt: int, limit: int = 1000) -> list[dict[str, Any]]:
     payload = _request_json(
         "GET",
@@ -930,8 +1234,9 @@ def get_kline(stock_code: str, period: str) -> list[dict[str, Any]]:
 
     Supported periods: ``1m``, ``5m``, ``15m``, ``30m``, ``60m``, ``day``,
     ``week`` and ``month`` (common aliases such as ``daily`` are accepted).
-    Daily/weekly/monthly data prefer Tencent; intraday data use Eastmoney.
-    Exhausted network/source errors return ``[]`` after retry and fallback.
+    Daily data use the configurable Tencent/Baidu/Sina/Tushare rotation.
+    Weekly/monthly data retain Tencent then Eastmoney compatibility; intraday
+    data use Eastmoney.  Exhausted source errors return ``[]``.
     """
     code = _normalise_code(stock_code)
     key = str(period).strip().lower()
@@ -939,7 +1244,14 @@ def get_kline(stock_code: str, period: str) -> list[dict[str, Any]]:
         raise ValueError(f"unsupported K-line period: {period!r}")
     canonical, klt = _PERIODS[key]
 
-    if canonical in {"day", "week", "month"}:
+    if canonical == "day":
+        try:
+            return _get_rotating_kline(code, canonical)
+        except MarketDataError as exc:
+            logger.warning("all daily K-line sources failed for %s: %s", code, exc)
+            return []
+
+    if canonical in {"week", "month"}:
         try:
             rows = _get_tencent_kline(code, canonical)
             if rows:

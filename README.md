@@ -75,17 +75,19 @@ docker compose up --build
 | `DATABASE_URL` | 可选 SQLAlchemy URL，设置后优先于 `DATABASE_PATH` | 未设置 |
 | `CORS_ORIGINS` | 允许的前端 Origin，逗号分隔 | 本地 3000 端口 |
 | `ENABLE_SCHEDULER` | 是否启用 API 进程内调度器 | `true` |
-| `QUOTE_SYNC_HOUR` / `QUOTE_SYNC_MINUTE` | Asia/Shanghai 时区的腾讯前复权日 K 同步时间 | `15` / `00` |
+| `QUOTE_SYNC_HOUR` / `QUOTE_SYNC_MINUTE` | Asia/Shanghai 时区的前复权日 K 同步时间 | `15` / `00` |
 | `SELECTION_RUN_HOUR` / `SELECTION_RUN_MINUTE` | Asia/Shanghai 时区的进程内选股时间 | `15` / `30` |
 | `JOB_API_TOKEN` | 保护云端选股触发接口；生产必须使用随机长字符串 | `change-me` |
 | `TUSHARE_TOKEN` | 可选，启用 Tushare 历史行情 | 未设置 |
+| `QUOTE_SOURCES` | 日 K 数据源优先级，逗号分隔；无令牌时自动跳过 Tushare | `tencent,baidu,sina,tushare` |
+| `QUOTE_SOURCE_FAILURE_THRESHOLD` / `QUOTE_SOURCE_COOLDOWN` | 单源连续失败熔断阈值 / 冷却秒数 | `3` / `300` |
 | `EASTMONEY_MIN_INTERVAL` | 东方财富请求最小间隔（秒） | `1.0` |
 
 完整清单和示例值见 `.env.example`。`.env` 已被 Git 忽略，不要提交真实令牌。
 
 ### 行情同步
 
-每日 `15:00`（Asia/Shanghai）先通过腾讯财经 HTTP 批量报价发现目标 A 股代码（`600/601/603/000/001/002/300/301`，排除 `688/8/4/43`），再从腾讯前复权日 K 接口写入 `stocks` 与 `daily_quotes`；`15:30` 选股任务仅在当日行情存在时执行。首次同步会同时灌入近 160 根日 K，以满足策略所需的历史指标窗口。部署在海外时不使用 mootdx 的 TCP 7709。股票列表的远端降级顺序为可选 Tushare、东方财富；全部远端不可用时，系统按 `backend/config/strategy.json` 的 `allowed_prefixes` 启用内置小型股票池，记录错误但继续腾讯 K 线同步，避免选股链路因主数据为空而中断。
+每日 `15:00`（Asia/Shanghai）先通过腾讯财经 HTTP 批量报价发现目标 A 股代码（`600/601/603/000/001/002/300/301`，排除 `688/8/4/43`），再按 `QUOTE_SOURCES` 从腾讯、百度股市通、新浪财经、可选 Tushare 依次获取前复权日 K，写入 `stocks` 与 `daily_quotes`；任一来源失败会自动尝试下一个来源，单只股票全部失败也不会中断整批。连续失败的来源会短暂熔断，避免海外环境反复等待已被屏蔽的站点。`15:30` 选股任务仅在当日行情存在时执行。首次同步会同时灌入近 160 根日 K，以满足策略所需的历史指标窗口。部署在海外时不使用 mootdx 的 TCP 7709。股票列表的远端降级顺序为可选 Tushare、东方财富；全部远端不可用时，系统按 `backend/config/strategy.json` 的 `allowed_prefixes` 启用内置小型股票池，记录错误但继续 K 线同步，避免选股链路因主数据为空而中断。
 
 可通过带令牌的接口手动触发：
 
@@ -101,7 +103,7 @@ Content-Type: application/json
 
 ### 数据来源与许可
 
-腾讯 HTTP 批量报价与 K 线接入参考 [a-stock-data](https://github.com/simonlin1212/a-stock-data) 的公开实现与数据源优先级说明（Apache-2.0）。本项目未打包该项目代码或依赖；仅使用其文档中公开的腾讯财经接口格式，运行时继续复用现有 `httpx` 依赖。
+腾讯 HTTP 批量报价、腾讯/百度行情接口与多源优先级参考 [a-stock-data](https://github.com/simonlin1212/a-stock-data) 的公开实现（Apache-2.0）；新浪前复权换算参考 [AKShare 新浪行情实现](https://github.com/akfamily/akshare/blob/main/akshare/stock/stock_zh_a_sina.py)。本项目未打包这些项目代码或依赖，运行时继续复用现有 `httpx` 依赖。百度直接使用其前复权序列；新浪原始日 K 使用官方复权因子转换 OHLC；Tushare 按 `adj_factor / 最新 adj_factor` 转换，所有来源统一日期、价量与金额单位。
 
 ### CI 与每日选股
 

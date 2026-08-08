@@ -4,6 +4,13 @@ import httpx
 from app.data import market_data
 
 
+@pytest.fixture(autouse=True)
+def reset_quote_source_health():
+    market_data._quote_source_health.clear()
+    yield
+    market_data._quote_source_health.clear()
+
+
 def _tencent_quote_line(symbol: str, code: str, name: str) -> str:
     values = ["1", name, code] + [""] * 50
     return f'v_{symbol}="{"~".join(values)}";'
@@ -197,12 +204,209 @@ def test_get_kline_prefers_tencent_and_accepts_prefixed_code(monkeypatch):
     monkeypatch.setattr(
         market_data,
         "_get_tencent_kline",
-        lambda code, period: [{"code": code, "period": period, "source": "tencent"}],
+        lambda code, period, limit=640: [
+            {"code": code, "period": period, "source": "tencent"}
+        ],
     )
 
     rows = market_data.get_kline("SH600519", "daily")
 
     assert rows == [{"code": "600519", "period": "day", "source": "tencent"}]
+
+
+def test_quote_sources_respects_order_and_requires_tushare_token(monkeypatch):
+    monkeypatch.setenv("QUOTE_SOURCES", "sina,baidu,tencent,tushare,baidu")
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+
+    assert market_data._quote_sources() == ("sina", "baidu", "tencent")
+
+    monkeypatch.setenv("TUSHARE_TOKEN", "test-token")
+    assert market_data._quote_sources() == ("sina", "baidu", "tencent", "tushare")
+
+
+def test_rotating_kline_falls_back_from_tencent_to_baidu(monkeypatch):
+    calls = []
+    monkeypatch.setenv("QUOTE_SOURCES", "tencent,baidu,sina")
+    monkeypatch.setattr(
+        market_data,
+        "_get_tencent_kline",
+        lambda code, period, limit=640: (_ for _ in ()).throw(
+            market_data.MarketDataError("blocked")
+        ),
+    )
+
+    def baidu(code, period, limit=640):
+        calls.append((code, period, limit))
+        return [{"datetime": "2026-08-07", "close": 10.0}]
+
+    monkeypatch.setattr(market_data, "_get_baidu_kline", baidu)
+    monkeypatch.setattr(
+        market_data,
+        "_get_sina_kline",
+        lambda *args, **kwargs: pytest.fail("Sina must not run after Baidu succeeds"),
+    )
+
+    rows = market_data._get_rotating_kline("600000", "day", limit=20)
+
+    assert calls == [("600000", "day", 20)]
+    assert rows[0]["source"] == "baidu-qfq"
+
+
+def test_rotating_kline_reaches_sina_after_prior_sources_fail(monkeypatch):
+    monkeypatch.setenv("QUOTE_SOURCES", "tencent,baidu,sina")
+    monkeypatch.setattr(
+        market_data,
+        "_get_tencent_kline",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("bad payload")),
+    )
+    monkeypatch.setattr(market_data, "_get_baidu_kline", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        market_data,
+        "_get_sina_kline",
+        lambda *args, **kwargs: [{"datetime": "2026-08-07", "close": 10.0}],
+    )
+
+    rows = market_data._get_rotating_kline("600000", "day")
+
+    assert rows[0]["source"] == "sina-qfq"
+
+
+def test_tencent_kline_only_accepts_and_normalises_qfq_block():
+    symbol = "sh600000"
+    payload = {
+        "data": {
+            symbol: {
+                "qfqday": [["2026-08-07", "9.80", "10.20", "10.50", "9.70", "1234"]],
+                "day": [["2026-08-07", "19.80", "20.20", "20.50", "19.70", "1234"]],
+                "qt": {symbol: ["", "浦发银行"]},
+            }
+        }
+    }
+
+    row = market_data._parse_tencent_kline("600000", "day", payload)[0]
+
+    assert (row["open"], row["high"], row["low"], row["close"]) == (
+        9.8, 10.5, 9.7, 10.2,
+    )
+    assert row["volume"] == 123400
+    assert row["source"] == "tencent-qfq"
+
+
+def test_baidu_kline_normalises_qfq_fields(monkeypatch):
+    monkeypatch.setattr(
+        market_data,
+        "_request_json",
+        lambda *args, **kwargs: {
+            "ResultCode": "0",
+            "Result": {
+                "newMarketData": {
+                    "keys": [
+                        "time", "open", "close", "volume", "high", "low",
+                        "amount", "ratio", "turnoverratio", "preClose",
+                    ],
+                    "marketData": (
+                        "2026-08-07,9.80,10.20,123400,10.50,9.70,1250000,"
+                        "2.00,1.25,10.00;"
+                    ),
+                }
+            },
+        },
+    )
+
+    row = market_data._get_baidu_kline("600000", "day", limit=1)[0]
+
+    assert (row["datetime"], row["open"], row["high"], row["low"], row["close"]) == (
+        "2026-08-07", 9.8, 10.5, 9.7, 10.2,
+    )
+    assert row["volume"] == 123400
+    assert row["source"] == "baidu-qfq"
+
+
+def test_sina_kline_applies_qfq_factor_and_keeps_volume(monkeypatch):
+    monkeypatch.setattr(
+        market_data,
+        "_request_json",
+        lambda *args, **kwargs: {
+            "result": {
+                "data": [
+                    {
+                        "day": "2026-08-07 00:00:00",
+                        "open": "20", "high": "22", "low": "18",
+                        "close": "21", "volume": "123400",
+                    }
+                ]
+            }
+        },
+    )
+    monkeypatch.setattr(
+        market_data,
+        "_sina_qfq_factors",
+        lambda symbol: ([market_data.date(2026, 1, 1)], [2.0]),
+    )
+
+    row = market_data._get_sina_kline("600000", "day", limit=1)[0]
+
+    assert (row["open"], row["high"], row["low"], row["close"]) == (
+        10.0, 11.0, 9.0, 10.5,
+    )
+    assert row["volume"] == 123400
+    assert row["source"] == "sina-qfq"
+
+
+def test_tushare_kline_applies_qfq_and_unit_conversion(monkeypatch):
+    monkeypatch.setenv("TUSHARE_TOKEN", "test-token")
+
+    def tushare_call(api_name, params, fields):
+        if api_name == "adj_factor":
+            return [
+                {"trade_date": "20260806", "adj_factor": 1.0},
+                {"trade_date": "20260807", "adj_factor": 2.0},
+            ]
+        return [
+            {
+                "trade_date": "20260806", "open": 20, "high": 22,
+                "low": 18, "close": 21, "vol": 1234, "amount": 1250,
+            },
+            {
+                "trade_date": "20260807", "open": 11, "high": 12,
+                "low": 10, "close": 11.5, "vol": 2000, "amount": 2300,
+            },
+        ]
+
+    monkeypatch.setattr(market_data, "_tushare_call", tushare_call)
+
+    rows = market_data._get_tushare_kline("600000", "day", limit=2)
+
+    assert rows[0]["datetime"] == "2026-08-06"
+    assert rows[0]["close"] == 10.5
+    assert rows[0]["volume"] == 123400
+    assert rows[0]["amount"] == 1250000
+    assert rows[0]["source"] == "tushare-qfq"
+
+
+def test_sync_quote_history_continues_after_one_stock_fails(monkeypatch):
+    universe = [
+        {"code": "600000", "name": "失败样本"},
+        {"code": "000001", "name": "平安银行"},
+    ]
+
+    def rotating(code, period, limit=640):
+        if code == "600000":
+            raise market_data.MarketDataError("all sources unavailable")
+        return [
+            {
+                "datetime": "2026-08-07", "open": 10, "high": 11,
+                "low": 9, "close": 10.5, "volume": 100, "amount": 1000,
+                "source": "sina-qfq",
+            }
+        ]
+
+    monkeypatch.setattr(market_data, "_get_rotating_kline", rotating)
+
+    rows = market_data.sync_quote_history("2026-08-07", limit=20, universe=universe)
+
+    assert [row["code"] for row in rows] == ["000001"]
+    assert rows[0]["source"] == "sina-qfq"
 
 
 def test_get_kline_rejects_unknown_period():
