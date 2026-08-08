@@ -18,7 +18,8 @@ No API key is required for the default paths.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import logging
 import os
@@ -541,34 +542,95 @@ def _tushare_daily(trade_date: str) -> list[dict[str, Any]]:
 
 
 def sync_daily_quotes(trade_date: str) -> list[dict[str, Any]]:
-    """Fetch all A-share daily quotes for an exact ``YYYY-MM-DD`` date.
+    """Fetch target-universe daily bars for one date from Tencent qfq K-lines.
 
-    Weekends/future dates return ``[]`` without a request.  Eastmoney is used
-    when its latest snapshot date exactly matches the requested date; otherwise
-    the optional Tushare bulk endpoint is tried.  An exchange holiday therefore
-    naturally returns ``[]`` and is not considered an error.
+    Tencent is deliberately the primary source here: unlike the former
+    Eastmoney snapshot path, it is suitable for overseas scheduled workers and
+    does not require a Tushare token.  The security master is metadata only;
+    OHLCV always comes from Tencent's HTTP K-line endpoint.
     """
     day = _parse_date(trade_date)
     if _is_obviously_non_trading_day(day):
         return []
-    try:
-        latest = _latest_market_snapshot(trade_date)
-        if latest:
-            return sorted(latest, key=lambda item: item["code"])
-    except MarketDataError as exc:
-        logger.warning("latest market snapshot failed: %s", exc)
+    return _tencent_history_for_universe(trade_date, limit=8, only_target=True)
 
-    if os.getenv("TUSHARE_TOKEN", "").strip():
+
+def latest_trading_date(reference: date | None = None) -> str:
+    """Best-effort latest session date without relying on an exchange calendar."""
+    current = reference or date.today()
+    if current.weekday() >= 5:
+        current -= timedelta(days=current.weekday() - 4)
+    return current.isoformat()
+
+
+def sync_quote_history(
+    trade_date: str | None = None, limit: int = 160, universe: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Fetch enough Tencent qfq daily history to prime the strategy indicators."""
+    target = trade_date or latest_trading_date()
+    day = _parse_date(target)
+    if _is_obviously_non_trading_day(day):
+        return []
+    return _tencent_history_for_universe(
+        target, limit=max(limit, 80), only_target=False, universe=universe
+    )
+
+
+def _is_target_code(code: str) -> bool:
+    return code.startswith(("600", "601", "603", "000", "001", "002", "300", "301"))
+
+
+def _tencent_history_for_universe(
+    trade_date: str, *, limit: int, only_target: bool, universe: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Fetch Tencent qfq bars for every configured A-share universe code.
+
+    The master list is cached by callers in the database after the first run;
+    workers are bounded to avoid overloading the free upstream endpoint.
+    """
+    universe = universe or sync_stock_list()
+    universe = [item for item in universe if _is_target_code(item["code"])]
+    if not universe:
+        return []
+
+    def fetch(stock: dict[str, Any]) -> list[dict[str, Any]]:
         try:
-            return _tushare_daily(trade_date)
+            bars = _get_tencent_kline(stock["code"], "day", limit=limit)
         except MarketDataError as exc:
-            logger.warning("historical daily sync failed: %s", exc)
-    else:
-        logger.info(
-            "no exact public bulk snapshot for %s; configure TUSHARE_TOKEN for historical dates",
-            trade_date,
-        )
-    return []
+            logger.warning("Tencent daily K-line failed for %s: %s", stock["code"], exc)
+            return []
+        rows: list[dict[str, Any]] = []
+        for bar in bars:
+            bar_day = str(bar["datetime"])[:10]
+            if bar_day > trade_date or (only_target and bar_day != trade_date):
+                continue
+            if any(bar.get(key) is None for key in ("open", "high", "low", "close")):
+                continue
+            rows.append(
+                {
+                    "code": stock["code"],
+                    "name": stock["name"] or stock["code"],
+                    "industry": stock.get("industry"),
+                    "is_st": stock.get("is_st", False),
+                    "trade_date": bar_day,
+                    "open": bar["open"],
+                    "high": bar["high"],
+                    "low": bar["low"],
+                    "close": bar["close"],
+                    "volume": bar.get("volume") or 0,
+                    "amount": bar.get("amount"),
+                    "source": "tencent-qfq",
+                }
+            )
+        return rows
+
+    workers = max(1, min(int(os.getenv("TENCENT_SYNC_WORKERS", "8")), 16))
+    output: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tencent-kline") as pool:
+        futures = [pool.submit(fetch, stock) for stock in universe]
+        for future in as_completed(futures):
+            output.extend(future.result())
+    return sorted(output, key=lambda item: (item["trade_date"], item["code"]))
 
 
 def _parse_tencent_kline(code: str, period: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -758,4 +820,7 @@ def get_kline(stock_code: str, period: str) -> list[dict[str, Any]]:
         return []
 
 
-__all__ = ["MarketDataError", "get_kline", "sync_daily_quotes", "sync_stock_list"]
+__all__ = [
+    "MarketDataError", "get_kline", "latest_trading_date", "sync_daily_quotes",
+    "sync_quote_history", "sync_stock_list",
+]

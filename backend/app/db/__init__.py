@@ -1,11 +1,14 @@
 from .compat import (
     init_db,
+    has_daily_quotes,
     latest_job,
     read_daily_bars,
+    read_stock_universe,
     read_selection,
     read_selections,
     read_strategy_selections,
     save_job,
+    save_daily_quotes,
     save_selections,
 )
 from .crud import CRUDBase
@@ -24,10 +27,13 @@ __all__ = [
     "trade_calendar",
     "job_runs",
     "init_db",
+    "has_daily_quotes",
+    "save_daily_quotes",
     "save_selections",
     "read_selections",
     "read_selection",
     "read_daily_bars",
+    "read_stock_universe",
     "read_strategy_selections",
     "save_job",
     "latest_job",

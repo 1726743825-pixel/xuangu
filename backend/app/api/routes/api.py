@@ -11,8 +11,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...db.session import get_db
+from ...data.market_data import latest_trading_date
 from ...integrations.market_adapter import get_kline, get_quote
-from ...jobs import execute_selection
+from ...jobs import execute_quote_sync, execute_selection
 from ...models import DailyQuote, SelectionResult as SelectionResultModel, Stock
 from ...schemas import (
     APIResponse,
@@ -88,6 +89,10 @@ def _run_selection_in_background(trade_date: date) -> None:
     execute_selection(trade_date.isoformat())
 
 
+def _sync_quotes_in_background(trade_date: date) -> None:
+    execute_quote_sync(trade_date.isoformat())
+
+
 def _require_job_token(x_job_token: str | None = Header(default=None)) -> None:
     expected = os.getenv("JOB_API_TOKEN", "").strip()
     if expected and (not x_job_token or not secrets.compare_digest(x_job_token, expected)):
@@ -103,6 +108,17 @@ def run_selection(
     target = request.trade_date if request and request.trade_date else date.today()
     background_tasks.add_task(_run_selection_in_background, target)
     return APIResponse(data=RunSelectionAccepted(status="accepted", date=target, message="选股任务已提交"))
+
+
+@router.post("/quotes/sync", response_model=APIResponse[RunSelectionAccepted], status_code=status.HTTP_202_ACCEPTED)
+def sync_quotes(
+    background_tasks: BackgroundTasks,
+    request: RunSelectionRequest | None = Body(default=None),
+    _: None = Depends(_require_job_token),
+) -> APIResponse[RunSelectionAccepted]:
+    target = request.trade_date if request and request.trade_date else date.fromisoformat(latest_trading_date())
+    background_tasks.add_task(_sync_quotes_in_background, target)
+    return APIResponse(data=RunSelectionAccepted(status="accepted", date=target, message="行情同步任务已提交"))
 
 
 @router.get("/stock/{code}/detail", response_model=APIResponse[StockDetail])

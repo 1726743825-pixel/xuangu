@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from app.models import Base, JobRun, SelectionResult
+from sqlalchemy import func, select
+
+from app.models import Base, JobRun, SelectionResult, Stock
 
 from .dao import job_runs, selection_results, stocks
 from .session import SessionLocal, engine
@@ -122,6 +124,60 @@ def latest_job() -> dict[str, Any] | None:
     with SessionLocal() as session:
         job = job_runs.latest(session)
         return _job_dict(job) if job else None
+
+
+def has_daily_quotes(trade_date: str) -> bool:
+    """Whether at least one persisted bar exists for the requested session."""
+    from .dao import daily_quotes
+
+    with SessionLocal() as session:
+        return bool(
+            session.scalar(
+                select(func.count()).select_from(daily_quotes.model).where(
+                    daily_quotes.model.trade_date == _as_date(trade_date)
+                )
+            )
+        )
+
+
+def read_stock_universe() -> list[dict[str, Any]]:
+    """Return the persisted stock master so daily sync avoids repeated master fetches."""
+    with SessionLocal() as session:
+        rows = session.scalars(select(Stock).order_by(Stock.code)).all()
+        return [
+            {"code": row.code, "name": row.name, "industry": row.industry, "is_st": row.is_st}
+            for row in rows
+        ]
+
+
+def save_daily_quotes(rows: list[dict[str, Any]]) -> int:
+    """Persist normalised Tencent OHLCV rows and their stock master attributes."""
+    from .dao import daily_quotes
+
+    with SessionLocal.begin() as session:
+        for row in rows:
+            stocks.upsert(
+                session,
+                values={
+                    "code": row["code"],
+                    "name": row["name"],
+                    "industry": row.get("industry"),
+                    "is_st": bool(row.get("is_st", False)),
+                },
+                commit=False,
+            )
+            daily_quotes.upsert(
+                session,
+                values={
+                    "stock_code": row["code"],
+                    "trade_date": _as_date(row["trade_date"]),
+                    "open": row["open"], "high": row["high"], "low": row["low"],
+                    "close": row["close"], "volume": row.get("volume"),
+                    "amount": row.get("amount"),
+                },
+                commit=False,
+            )
+        return len(rows)
 
 
 def read_daily_bars(start_date: str, end_date: str) -> list[dict[str, Any]]:

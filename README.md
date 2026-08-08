@@ -75,12 +75,33 @@ docker compose up --build
 | `DATABASE_URL` | 可选 SQLAlchemy URL，设置后优先于 `DATABASE_PATH` | 未设置 |
 | `CORS_ORIGINS` | 允许的前端 Origin，逗号分隔 | 本地 3000 端口 |
 | `ENABLE_SCHEDULER` | 是否启用 API 进程内调度器 | `true` |
+| `QUOTE_SYNC_HOUR` / `QUOTE_SYNC_MINUTE` | Asia/Shanghai 时区的腾讯前复权日 K 同步时间 | `15` / `00` |
 | `SELECTION_RUN_HOUR` / `SELECTION_RUN_MINUTE` | Asia/Shanghai 时区的进程内选股时间 | `15` / `30` |
 | `JOB_API_TOKEN` | 保护云端选股触发接口；生产必须使用随机长字符串 | `change-me` |
 | `TUSHARE_TOKEN` | 可选，启用 Tushare 历史行情 | 未设置 |
 | `EASTMONEY_MIN_INTERVAL` | 东方财富请求最小间隔（秒） | `1.0` |
 
 完整清单和示例值见 `.env.example`。`.env` 已被 Git 忽略，不要提交真实令牌。
+
+### 行情同步
+
+每日 `15:00`（Asia/Shanghai）先从腾讯财经 HTTP 前复权日 K 接口同步目标 A 股代码（`600/601/603/000/001/002/300/301`），并写入 `stocks` 与 `daily_quotes`；`15:30` 选股任务仅在当日行情存在时执行。首次同步会同时灌入近 160 根日 K，以满足策略所需的历史指标窗口。部署在海外时不使用 mootdx 的 TCP 7709；若腾讯暂时不可用，任务会失败并保留错误，建议稍后重试或在国内网络环境运行一次同步。股票主数据仍通过既有元数据接口获取，K 线 OHLCV 不依赖东方财富快照或 Tushare。
+
+可通过带令牌的接口手动触发：
+
+```text
+POST /api/quotes/sync
+X-Job-Token: <JOB_API_TOKEN>
+Content-Type: application/json
+
+{"date":"2026-08-07"}
+```
+
+不传 `date` 时使用最近一个工作日。接口异步返回 `202 Accepted`，同步过程中不会阻塞 Web 请求。
+
+### 数据来源与许可
+
+腾讯 HTTP K 线接入参考 [a-stock-data](https://github.com/simonlin1212/a-stock-data) 的公开实现与数据源优先级说明（Apache-2.0）。本项目未打包该项目代码或依赖；仅使用其文档中公开的腾讯财经接口格式，运行时继续复用现有 `httpx` 依赖。
 
 ### CI 与每日选股
 

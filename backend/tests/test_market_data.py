@@ -64,9 +64,49 @@ def test_sync_daily_quotes_skips_weekend_without_network(monkeypatch):
         called = True
         raise AssertionError("network must not be called")
 
-    monkeypatch.setattr(market_data, "_latest_market_snapshot", fail_if_called)
+    monkeypatch.setattr(market_data, "sync_stock_list", fail_if_called)
     assert market_data.sync_daily_quotes("2026-08-08") == []
     assert called is False
+
+
+def test_sync_daily_quotes_uses_tencent_qfq_and_target_universe(monkeypatch):
+    monkeypatch.setattr(
+        market_data,
+        "sync_stock_list",
+        lambda: [
+            {"code": "600000", "name": "浦发银行", "industry": "银行", "is_st": False},
+            {"code": "688001", "name": "科创样本", "industry": None, "is_st": False},
+        ],
+    )
+    monkeypatch.setattr(
+        market_data,
+        "_get_tencent_kline",
+        lambda code, period, limit=640: [
+            {"datetime": "2026-08-06", "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 100, "amount": 1000},
+            {"datetime": "2026-08-07", "open": 10.5, "high": 12, "low": 10, "close": 11, "volume": 200, "amount": 2200},
+        ],
+    )
+
+    rows = market_data.sync_daily_quotes("2026-08-07")
+
+    assert rows == [{"code": "600000", "name": "浦发银行", "industry": "银行", "is_st": False,
+                     "trade_date": "2026-08-07", "open": 10.5, "high": 12, "low": 10,
+                     "close": 11, "volume": 200, "amount": 2200, "source": "tencent-qfq"}]
+
+
+def test_sync_quote_history_keeps_prior_bars(monkeypatch):
+    monkeypatch.setattr(market_data, "sync_stock_list", lambda: [{"code": "000001", "name": "平安银行"}])
+    monkeypatch.setattr(
+        market_data, "_get_tencent_kline",
+        lambda code, period, limit=640: [
+            {"datetime": "2026-08-06", "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 100, "amount": 1000},
+            {"datetime": "2026-08-07", "open": 10.5, "high": 12, "low": 10, "close": 11, "volume": 200, "amount": 2200},
+        ],
+    )
+
+    rows = market_data.sync_quote_history("2026-08-07", limit=80)
+
+    assert [row["trade_date"] for row in rows] == ["2026-08-06", "2026-08-07"]
 
 
 def test_sync_daily_quotes_rejects_bad_date():

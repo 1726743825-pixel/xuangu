@@ -24,3 +24,10 @@ def test_run_selection_requires_configured_token(monkeypatch):
     with TestClient(app) as client:
         response = client.post("/api/selections/run", json={"trade_date": "2099-01-02"})
         assert response.status_code == 401
+
+
+def test_quote_sync_requires_configured_token(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    with TestClient(app) as client:
+        response = client.post("/api/quotes/sync", json={"date": "2026-08-07"})
+        assert response.status_code == 401

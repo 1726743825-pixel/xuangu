@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import db
 from .api.routes import router as api_router
-from .jobs import execute_selection
+from .jobs import execute_quote_sync, execute_selection
 
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
@@ -32,7 +32,18 @@ def _cors_origins() -> list[str]:
 async def lifespan(_: FastAPI):
     db.init_db()
     if _enabled("ENABLE_SCHEDULER") and not scheduler.running:
-        scheduler.add_job(execute_selection, "cron", hour=int(os.getenv("SELECTION_RUN_HOUR", "16")), minute=int(os.getenv("SELECTION_RUN_MINUTE", "0")), id="daily-selection", replace_existing=True)
+        scheduler.add_job(
+            execute_quote_sync, "cron",
+            hour=int(os.getenv("QUOTE_SYNC_HOUR", "15")),
+            minute=int(os.getenv("QUOTE_SYNC_MINUTE", "0")),
+            id="daily-quote-sync", replace_existing=True,
+        )
+        scheduler.add_job(
+            execute_selection, "cron",
+            hour=int(os.getenv("SELECTION_RUN_HOUR", "15")),
+            minute=int(os.getenv("SELECTION_RUN_MINUTE", "30")),
+            id="daily-selection", replace_existing=True,
+        )
         scheduler.start()
     yield
     if scheduler.running:
