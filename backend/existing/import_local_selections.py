@@ -54,13 +54,13 @@ def _result_trade_date(items: list[dict]) -> str:
     return result_date
 
 
-def import_selections(
+def _import_selection_run(
     trade_date: str,
     *,
     selector: Callable[[str], list[dict]] = run_selection,
     post: Callable[..., httpx.Response] = httpx.post,
-) -> int:
-    """Select locally and submit one import request, returning imported count."""
+) -> tuple[int, str]:
+    """Select locally and submit one import request with its actual trade date."""
     url = os.environ.get("SELECTION_IMPORT_URL", "").strip()
     token = os.environ.get("JOB_API_TOKEN", "").strip()
     if not url:
@@ -92,7 +92,17 @@ def import_selections(
     count = payload.get("data", {}).get("count") if isinstance(payload, dict) else None
     if not isinstance(count, int) or count != len(items):
         raise SelectionImportError("导入接口响应数量与本地结果不一致")
-    return count
+    return count, result_date
+
+
+def import_selections(
+    trade_date: str,
+    *,
+    selector: Callable[[str], list[dict]] = run_selection,
+    post: Callable[..., httpx.Response] = httpx.post,
+) -> int:
+    """Compatibility wrapper returning only the imported item count."""
+    return _import_selection_run(trade_date, selector=selector, post=post)[0]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -106,11 +116,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _load_env_file(Path(args.env_file))
     try:
-        count = import_selections(args.trade_date)
+        count, result_date = _import_selection_run(args.trade_date)
     except (SelectionImportError, LocalSelectionDataError, ValueError) as exc:
         print(f"本地选股导入失败: {exc}", file=sys.stderr)
         return 1
-    print(f"本地选股导入成功: trade_date={args.trade_date}, count={count}")
+    print(f"本地选股导入成功: trade_date={result_date}, count={count}")
     return 0
 
 

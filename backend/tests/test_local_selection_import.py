@@ -65,6 +65,14 @@ def test_import_uses_actual_trade_date_emitted_by_weekend_selector(monkeypatch):
     assert captured["json"]["trade_date"] == "2026-08-07"
 
 
+def test_main_success_log_uses_actual_trade_date(monkeypatch, capsys):
+    monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
+    monkeypatch.setattr(local_import, "_import_selection_run", lambda _: (10, "2026-08-07"))
+
+    assert local_import.main(["--trade-date", "2026-08-08", "--env-file", "unused.env"]) == 0
+    assert "trade_date=2026-08-07, count=10" in capsys.readouterr().out
+
+
 def test_import_local_selection_rejects_missing_token(monkeypatch):
     monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
     monkeypatch.delenv("JOB_API_TOKEN", raising=False)
