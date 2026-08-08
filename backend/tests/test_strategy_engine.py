@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.strategy import engine
 
@@ -49,6 +50,19 @@ def test_builtin_selection_ignores_ma_and_macd_input_values():
     decorated_result = engine._builtin_selection(engine._as_frame(decorated), target, config)
 
     assert plain_result == decorated_result
+
+
+@pytest.mark.parametrize("code", ["300001", "301001"])
+def test_chinext_codes_are_accepted_and_scored(code: str):
+    bars = engine._as_frame(_bars(code=code))
+    config = {**engine._load_config()["builtin"], "minimum_score": 0}
+    target = bars["trade_date"].max().date().isoformat()
+
+    result = engine._builtin_selection(bars, target, config)
+
+    assert result
+    assert result[0]["stock_code"] == code
+    assert result[0]["score"] >= 0
 
 
 def test_custom_result_normalisation():
