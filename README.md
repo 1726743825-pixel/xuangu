@@ -116,6 +116,31 @@ Content-Type: application/json
 
 云端部署建议设置 `ENABLE_SCHEDULER=false`，由 GitHub Actions 单点触发，避免应用内调度器与云工作流重复执行。
 
+### 本机选股并导入 Railway
+
+海外 Railway 不能可靠访问国内免费行情源时，使用国内网络的 Windows 机器执行本地选股，并将结果上传到 Railway。先在项目根目录的未提交 `.env` 中配置：
+
+```text
+SELECTION_IMPORT_URL=https://xuangu-production.up.railway.app/api/selections/import
+JOB_API_TOKEN=<与 Railway 服务相同的令牌>
+```
+
+手动运行（失败会返回非零退出码，并保留不含令牌的诊断）：
+
+```powershell
+.\scripts\run-local-selection-import.ps1
+# 或补跑指定交易日
+.\scripts\run-local-selection-import.ps1 -TradeDate 2026-08-07
+```
+
+确认手动运行正常后，以下命令才会**创建/更新** Windows 任务计划程序任务；它每天本机时间 15:40 运行，仅在当前用户已登录且位于国内网络时执行：
+
+```powershell
+.\scripts\install-local-selection-task.ps1
+```
+
+检查任务：`Get-ScheduledTask -TaskName Xuangu-LocalSelectionImport`。任务定义不保存令牌；令牌从未提交的 `.env` 或当前用户环境变量读取。空选股结果会被拒绝上传，避免用空数据覆盖网站已有结果。
+
 ### Render / Railway 后端
 
 Render 可直接导入根目录 `render.yaml`。Blueprint 使用免费 Web Service、Dockerfile 最终 `backend` 阶段和 `/api/health` 健康检查。创建后设置 `CORS_ORIGINS` 为 Vercel 域名，并把 Render 生成的 `JOB_API_TOKEN` 同步到 GitHub Actions。Render 免费实例不提供持久磁盘，因此配置中的 `/tmp/xuangu.db` 会在重建或休眠恢复后丢失；免费方案适合演示，需长期保留结果时请选择持久磁盘或外部数据库。
