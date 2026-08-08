@@ -26,7 +26,7 @@ class _Response:
 
 
 def _items(_: str):
-    return [{"code": "600519", "name": "贵州茅台", "score": 88.0}]
+    return [{"code": "600519", "name": "贵州茅台", "score": 88.0, "trade_date": "2026-08-07"}]
 
 
 def test_import_local_selection_posts_contract_with_token(monkeypatch):
@@ -50,6 +50,19 @@ def test_import_local_selection_rejects_empty_results(monkeypatch):
     monkeypatch.setenv("JOB_API_TOKEN", "secret")
     with pytest.raises(local_import.SelectionImportError, match="结果为空"):
         local_import.import_selections("2026-08-07", selector=lambda _: [])
+
+
+def test_import_uses_actual_trade_date_emitted_by_weekend_selector(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret")
+    captured = {}
+
+    def post(url, **kwargs):
+        captured.update(kwargs)
+        return _Response(1)
+
+    assert local_import.import_selections("2026-08-08", selector=_items, post=post) == 1
+    assert captured["json"]["trade_date"] == "2026-08-07"
 
 
 def test_import_local_selection_rejects_missing_token(monkeypatch):

@@ -42,6 +42,18 @@ def _load_env_file(path: Path) -> None:
             os.environ[key] = value.strip().strip('"').strip("'")
 
 
+def _result_trade_date(items: list[dict]) -> str:
+    """Use the actual trading date emitted by the selector for the API row."""
+    try:
+        result_date = str(items[0]["trade_date"])
+        date.fromisoformat(result_date)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SelectionImportError("选股结果缺少有效 trade_date") from exc
+    if any(str(item.get("trade_date")) != result_date for item in items):
+        raise SelectionImportError("选股结果包含不一致的 trade_date")
+    return result_date
+
+
 def import_selections(
     trade_date: str,
     *,
@@ -59,12 +71,13 @@ def import_selections(
     items = selector(trade_date)
     if not items:
         raise SelectionImportError("本地选股结果为空，已拒绝上传")
+    result_date = _result_trade_date(items)
 
     try:
         response = post(
             url,
             headers={"X-Job-Token": token},
-            json={"trade_date": trade_date, "items": items},
+            json={"trade_date": result_date, "items": items},
             timeout=60.0,
         )
         response.raise_for_status()
