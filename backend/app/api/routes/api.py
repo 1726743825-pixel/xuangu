@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from ...db.session import get_db
 from ... import db
 from ...data.market_data import latest_trading_date
-from ...integrations.market_adapter import get_kline, get_quote
+from ...integrations.market_adapter import get_quote
 from ...jobs import execute_quote_sync, execute_selection
 from ...models import DailyQuote, SelectionResult as SelectionResultModel, Stock
 from ...schemas import (
@@ -186,16 +186,9 @@ def stock_kline(
     rows = session.scalars(
         select(DailyQuote).where(DailyQuote.stock_code == code).order_by(DailyQuote.trade_date).limit(500)
     ).all()
-    if rows:
-        if period == "weekly":
-            values = _weekly_bars(rows)
-        else:
-            values = [[row.trade_date.isoformat(), float(row.open or 0), float(row.close or 0),
-                       float(row.low or 0), float(row.high or 0), float(row.volume or 0)] for row in rows]
+    if period == "weekly":
+        values = _weekly_bars(rows)
     else:
-        # The adapter keeps the endpoint useful before historical quotes have been imported.
-        source = get_kline(code, 60)
-        if period == "weekly":
-            source = source[::5]
-        values = [[item["date"], item["open"], item["close"], item["low"], item["high"], item["volume"]] for item in source]
+        values = [[row.trade_date.isoformat(), float(row.open or 0), float(row.close or 0),
+                   float(row.low or 0), float(row.high or 0), float(row.volume or 0)] for row in rows]
     return APIResponse(data=values)

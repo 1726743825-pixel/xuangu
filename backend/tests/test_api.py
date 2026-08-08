@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from app import db
 from app.main import app
 
 
@@ -88,3 +89,36 @@ def test_selection_import_persists_and_overwrites_same_strategy(monkeypatch):
     item = selections.json()["data"]["items"][0]
     assert item["score"] == 88.0
     assert item["reasons"] == ["本地更新"]
+
+
+def test_stock_kline_returns_empty_when_only_stock_master_exists():
+    db.save_selections([{
+        "code": "301234", "name": "无行情股票", "trade_date": "2026-08-07", "score": 80,
+    }])
+    with TestClient(app) as client:
+        response = client.get("/api/stock/301234/kline?period=daily")
+    assert response.status_code == 200
+    assert response.json() == {"code": 0, "data": [], "message": ""}
+
+
+def test_stock_kline_uses_persisted_daily_quotes_in_echarts_order():
+    db.save_daily_quotes([
+        {
+            "code": "002001", "name": "真实日线", "trade_date": "2026-08-06",
+            "open": 10.1, "high": 11.5, "low": 9.8, "close": 11.2, "volume": 123456,
+        },
+        {
+            "code": "002001", "name": "真实日线", "trade_date": "2026-08-07",
+            "open": 11.3, "high": 12.0, "low": 10.9, "close": 11.8, "volume": 234567,
+        },
+    ])
+    with TestClient(app) as client:
+        daily = client.get("/api/stock/002001/kline?period=daily")
+        weekly = client.get("/api/stock/002001/kline?period=weekly")
+    assert daily.status_code == 200
+    assert daily.json()["data"] == [
+        ["2026-08-06", 10.1, 11.2, 9.8, 11.5, 123456.0],
+        ["2026-08-07", 11.3, 11.8, 10.9, 12.0, 234567.0],
+    ]
+    assert weekly.status_code == 200
+    assert weekly.json()["data"] == [["2026-08-07", 10.1, 11.8, 9.8, 12.0, 358023.0]]
