@@ -53,3 +53,20 @@ def test_run_selection_raises_a_diagnostic_error_when_data_is_missing(monkeypatc
 def test_run_selection_rejects_invalid_dates():
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
         selection_script.run_selection("20260807")
+
+
+def test_run_selection_normalises_weekend_to_latest_trading_date(monkeypatch):
+    observed: list[str] = []
+    friday_bars = _bars()
+    friday_bars[-1]["trade_date"] = pd.Timestamp("2026-08-07")
+    monkeypatch.setattr(
+        selection_script, "_load_market_bars",
+        lambda target: (observed.append(target) or [{"code": "600001", "name": "测试股份"}], friday_bars),
+    )
+    config = selection_script.engine._load_config()["builtin"]
+    monkeypatch.setattr(selection_script.engine, "_load_config", lambda: {"builtin": {**config, "minimum_score": 0}})
+
+    items = selection_script.run_selection("2026-08-08")
+
+    assert observed == ["2026-08-07"]
+    assert items and {item["trade_date"] for item in items} == {"2026-08-07"}

@@ -21,11 +21,15 @@ class LocalSelectionDataError(RuntimeError):
     """The local quote source did not provide usable data for a selection run."""
 
 
-def _validate_trade_date(trade_date: str) -> str:
+def _normalise_trade_date(trade_date: str | None) -> str:
+    """Return the latest usable trading date instead of emitting weekend rows."""
+    if trade_date is None:
+        return market_data.latest_trading_date()
     try:
-        return datetime.strptime(trade_date, "%Y-%m-%d").date().isoformat()
+        requested = datetime.strptime(trade_date, "%Y-%m-%d").date()
     except (TypeError, ValueError) as exc:
         raise ValueError("trade_date 必须为 YYYY-MM-DD 格式") from exc
+    return market_data.latest_trading_date(requested)
 
 
 def _load_market_bars(trade_date: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -85,7 +89,7 @@ def _to_import_item(result: dict[str, Any], industries: dict[str, str | None]) -
     }
 
 
-def run_selection(trade_date: str) -> list[dict[str, Any]]:
+def run_selection(trade_date: str | None = None) -> list[dict[str, Any]]:
     """Run the existing built-in strategy using locally fetched quote data.
 
     The returned records are directly accepted as ``items`` by
@@ -93,7 +97,7 @@ def run_selection(trade_date: str) -> list[dict[str, Any]]:
     processed but no stock met the configured threshold; source failures raise
     :class:`LocalSelectionDataError` instead of claiming an empty success.
     """
-    target = _validate_trade_date(trade_date)
+    target = _normalise_trade_date(trade_date)
     universe, raw_bars = _load_market_bars(target)
     config = engine._load_config()["builtin"]
     bars = engine._as_frame(raw_bars)
@@ -104,6 +108,6 @@ def run_selection(trade_date: str) -> list[dict[str, Any]]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="运行本地 A 股选股并输出可导入的 JSON items")
-    parser.add_argument("trade_date", help="交易日，格式 YYYY-MM-DD")
+    parser.add_argument("trade_date", nargs="?", help="交易日（可选）；周末会自动回退至最近交易日")
     args = parser.parse_args()
     print(json.dumps(run_selection(args.trade_date), ensure_ascii=False, indent=2))

@@ -20,7 +20,7 @@
 python existing/selection_script.py 2026-08-07 > selections.json
 ```
 
-输出为 JSON 数组；用它作为导入接口请求体的 `items`。本机需要安装 `backend/requirements.txt`，不需要 Railway 数据库、`JOB_API_TOKEN` 或 Tushare token；默认使用项目数据层配置的免费 K 线源。不要将密钥、数据库文件、临时下载行情或 `node_modules` 提交到此目录。
+输出为 JSON 数组；用它作为导入接口请求体的 `items`。日期参数可省略；省略时使用最近交易日，显式传入周末也会回退至最近交易日，因此不会产生周六/周日的空 K 线或导入记录。本机需要安装 `backend/requirements.txt`，不需要 Railway 数据库、`JOB_API_TOKEN` 或 Tushare token；默认使用项目数据层配置的免费 K 线源。不要将密钥、数据库文件、临时下载行情或 `node_modules` 提交到此目录。
 
 ## Python 脚本接口
 
