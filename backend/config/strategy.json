@@ -9,15 +9,12 @@
       "excluded_prefixes": ["688", "8", "4", "43"]
     },
     "filters": {
-      "minimum_history_days": 65,
-      "ma_slope_tolerance": 0.998
+      "minimum_history_days": 15
     },
     "weights": {
-      "moving_average": 20,
-      "macd": 22,
-      "kdj": 16,
-      "volume": 22,
-      "price_action": 20
+      "kdj": 10,
+      "volume": 15,
+      "price_action": 12
     }
   },
   "custom": {

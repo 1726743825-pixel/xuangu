@@ -59,12 +59,9 @@ def _load_market_bars(trade_date: str) -> tuple[list[dict[str, Any]], list[dict[
 def _reasons(signals: dict[str, Any]) -> list[str]:
     """Expose already-calculated strategy signals as concise display reasons."""
     reasons: list[str] = []
-    if signals.get("ma5") is not None and signals.get("ma10") is not None and signals["ma5"] > signals["ma10"]:
-        reasons.append("短期均线多头")
-    if signals.get("dif") is not None and signals.get("dea") is not None and signals["dif"] > signals["dea"]:
-        reasons.append("MACD 多头")
-    vol_ma5 = signals.get("vol_ma5")
-    if vol_ma5 and signals.get("volume") and signals["volume"] > vol_ma5:
+    if signals.get("kdj_k") is not None and signals.get("kdj_d") is not None and signals["kdj_k"] > signals["kdj_d"]:
+        reasons.append("KDJ 短线强势")
+    if signals.get("volume_ratio_5") and signals["volume_ratio_5"] > 1:
         reasons.append("成交量高于5日均量")
     return reasons or ["满足内置技术共振策略"]
 

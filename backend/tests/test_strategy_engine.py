@@ -36,6 +36,19 @@ def test_builtin_selection_returns_unified_shape():
         "stock_code", "stock_name", "strategy_name", "trade_date", "signals", "score"
     }
     assert isinstance(result[0]["signals"], dict)
+    assert not {"ma5", "ma10", "ma20", "ma60", "dif", "dea", "macd"}.intersection(result[0]["signals"])
+
+
+def test_builtin_selection_ignores_ma_and_macd_input_values():
+    plain = _bars()
+    decorated = [{**row, "ma5": -999, "ma10": 999, "ma20": 999, "ma60": 999, "dif": -999, "dea": 999, "macd": -999} for row in plain]
+    config = {**engine._load_config()["builtin"], "minimum_score": 0}
+    target = pd.Timestamp(plain[-1]["trade_date"]).date().isoformat()
+
+    plain_result = engine._builtin_selection(engine._as_frame(plain), target, config)
+    decorated_result = engine._builtin_selection(engine._as_frame(decorated), target, config)
+
+    assert plain_result == decorated_result
 
 
 def test_custom_result_normalisation():

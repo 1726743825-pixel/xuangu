@@ -73,21 +73,11 @@ def _linear(value: pd.Series, low: float, high: float, maximum: float) -> pd.Ser
 def _indicators(bars: pd.DataFrame) -> pd.DataFrame:
     data = bars.copy()
     grouped = data.groupby("stock_code", sort=False, observed=True)
-    close = grouped["close"]
     volume = grouped["volume"]
-
-    for window in (5, 10, 20, 60):
-        data[f"ma{window}"] = close.transform(lambda values, n=window: values.rolling(n, min_periods=n).mean())
     data["vol_ma5"] = volume.transform(lambda values: values.rolling(5, min_periods=5).mean())
     data["vol_ma10"] = volume.transform(lambda values: values.rolling(10, min_periods=10).mean())
-
-    ema12 = close.transform(lambda values: values.ewm(span=12, adjust=False).mean())
-    ema26 = close.transform(lambda values: values.ewm(span=26, adjust=False).mean())
-    data["dif"] = ema12 - ema26
-    data["dea"] = data.groupby("stock_code", sort=False, observed=True)["dif"].transform(
-        lambda values: values.ewm(span=9, adjust=False).mean()
-    )
-    data["macd"] = 2 * (data["dif"] - data["dea"])
+    data["volume_ratio_5"] = data["volume"] / data["vol_ma5"]
+    data["volume_ratio_10"] = data["volume"] / data["vol_ma10"]
 
     low9 = grouped["low"].transform(lambda values: values.rolling(9, min_periods=9).min())
     high9 = grouped["high"].transform(lambda values: values.rolling(9, min_periods=9).max())
@@ -110,11 +100,6 @@ def _builtin_selection(bars: pd.DataFrame, trade_date: str, config: dict[str, An
         return []
     data = _indicators(bars)
     grouped = data.groupby("stock_code", sort=False, observed=True)
-    for column in ("ma5", "ma10", "ma20", "ma60"):
-        data[f"{column}_lag4"] = grouped[column].shift(4)
-    data["macd_prev"] = grouped["macd"].shift(1)
-    data["dif_prev"] = grouped["dif"].shift(1)
-    data["dea_prev"] = grouped["dea"].shift(1)
     data["volume_prev"] = grouped["volume"].shift(1)
     data["close_prev"] = grouped["close"].shift(1)
     data["high_10_prev"] = grouped["high"].transform(
@@ -132,32 +117,10 @@ def _builtin_selection(bars: pd.DataFrame, trade_date: str, config: dict[str, An
         & ~current["stock_code"].str.startswith(excluded_prefixes)
         & ~current["stock_name"].str.upper().str.contains("ST", regex=False)
     )
-    tolerance = float(config["filters"]["ma_slope_tolerance"])
-    ma_order = (
-        current["ma5"].gt(current["ma10"])
-        & current["ma10"].gt(current["ma20"])
-        & current["ma20"].gt(current["ma60"])
-    )
-    ma_rising = np.logical_and.reduce([
-        current[column].gt(current[f"{column}_lag4"] * tolerance)
-        for column in ("ma5", "ma10", "ma20", "ma60")
-    ])
-    hard_filter = universe & ma_order & ma_rising & current["history_count"].ge(
+    hard_filter = universe & current["history_count"].ge(
         int(config["filters"]["minimum_history_days"])
     )
 
-    weights = config["weights"]
-    ma_score = (
-        _linear((current["ma5"] / current["ma10"] - 1) * 100, 0, 3, 4)
-        + _linear((current["close"] / current["ma5"] - 1) * 100, 0, 3, 4)
-        + _linear((current["ma20"] / current["ma60"] - 1) * 100, 0, 5, 4)
-    )
-    dif_gap = current["dif"] - current["dea"]
-    macd_position = _linear(dif_gap, 0, 0.5, 4).where(current["dif"].ge(0), _linear(dif_gap, 0, 0.3, 2))
-    macd_growth = _linear(current["macd"] - current["macd_prev"], -0.2, 0.3, 4).where(current["macd"].gt(0), 0)
-    golden_cross = current["dif"].gt(current["dea"]) & current["dif_prev"].le(current["dea_prev"])
-    strong_cross = current["dif"].gt(current["dea"]) & dif_gap.div(current["dea"].abs().clip(lower=0.01)).gt(0.1)
-    macd_score = macd_position + macd_growth + np.select([golden_cross, strong_cross], [5.0, 3.0], default=0.0)
     k_score = np.where(
         current["kdj_k"].gt(current["kdj_d"]),
         np.where(current["kdj_k"].gt(50), 3 + _linear(current["kdj_k"], 50, 70, 2), _linear(current["kdj_k"], 0, 50, 3)),
@@ -174,21 +137,17 @@ def _builtin_selection(bars: pd.DataFrame, trade_date: str, config: dict[str, An
     close_position = (current["close"] - current["low"]) / (current["high"] - current["low"]).replace(0, np.nan)
     price_score = _linear(breakout, 0, 8, 5) + _linear(body, 0, 5, 4) + _linear(close_position, 0.5, 1, 3)
 
-    weighted_total = (
-        ma_score * float(weights["moving_average"]) / 12
-        + macd_score * float(weights["macd"]) / 13
-        + kdj_score * float(weights["kdj"]) / 10
-        + volume_score * float(weights["volume"]) / 15
-        + price_score * float(weights["price_action"]) / 12
-    )
-    current["score"] = weighted_total.clip(0, 100).round(2)
+    # Legacy source scoring retains KDJ (10), volume (15), and K-line action
+    # (12).  Normalise the remaining 37-point technical subtotal to 100.
+    component_max = float(sum(config["weights"].values()))
+    current["score"] = ((kdj_score + volume_score + price_score) / component_max * 100).clip(0, 100).round(2)
     selected = current.loc[hard_filter & current["score"].ge(float(config["minimum_score"]))].nlargest(
         int(config["top_n"]), "score"
     )
     if selected.empty:
         return []
 
-    signal_columns = ["close", "change_pct", "ma5", "ma10", "ma20", "ma60", "dif", "dea", "macd", "kdj_k", "kdj_d", "kdj_j", "vol_ma5"]
+    signal_columns = ["close", "change_pct", "volume", "volume_ratio_5", "volume_ratio_10", "kdj_k", "kdj_d", "kdj_j"]
     rounded = selected[signal_columns].round(4).replace({np.nan: None})
     signals = rounded.to_dict(orient="records")
     result = selected[["stock_code", "stock_name", "score"]].copy()
