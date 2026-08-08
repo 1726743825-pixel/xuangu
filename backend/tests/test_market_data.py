@@ -52,75 +52,53 @@ def test_tencent_stock_list_applies_allowed_and_excluded_prefixes(monkeypatch):
     assert not any(code.startswith(("688", "8", "4", "43")) for code in codes)
 
 
-def test_sync_stock_list_uses_builtin_pool_after_all_remote_sources_fail(monkeypatch):
-    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+def test_tencent_stock_list_keeps_only_supported_universe(monkeypatch):
     monkeypatch.setattr(
         market_data,
-        "_universe_prefixes",
-        lambda: (("600", "300"), ("688", "8", "4", "43")),
+        "_tencent_stock_candidates",
+        lambda: ["600000", "000001", "300001", "688001", "830001", "430001"],
     )
     monkeypatch.setattr(
         market_data,
-        "_fetch_tencent_stock_list",
-        lambda: (_ for _ in ()).throw(market_data.MarketDataError("Tencent unavailable")),
+        "_request_tencent_quote_batch",
+        lambda symbols: "\n".join(
+            [
+                'v_sh600000="1~浦发银行~600000~9.21";',
+                'v_sz000001="51~平安银行~000001~11.19";',
+                'v_sz300001="51~特锐德~300001~20.00";',
+                'v_sh688001="1~华兴源创~688001~20.00";',
+                'v_bj830001="1~示例北交所~830001~1.00";',
+                'v_bj430001="1~示例三板~430001~1.00";',
+            ]
+        ),
     )
-    monkeypatch.setattr(
-        market_data,
-        "_eastmoney_stock_list",
-        lambda: (_ for _ in ()).throw(market_data.MarketDataError("Eastmoney blocked")),
-    )
 
-    rows = market_data.sync_stock_list()
+    rows = market_data._tencent_stock_list()
 
-    assert rows
-    assert {row["source"] for row in rows} == {"builtin-prefix-fallback"}
-    assert all(row["code"].startswith(("600", "300")) for row in rows)
-    assert {row["code"][:3] for row in rows} == {"600", "300"}
+    assert [row["code"] for row in rows] == ["000001", "300001", "600000"]
 
 
-def test_sync_stock_list_prefers_tencent_without_touching_eastmoney(monkeypatch):
+def test_sync_stock_list_prefers_tencent(monkeypatch):
     expected = [{"code": "600000", "name": "浦发银行", "source": "tencent"}]
-    monkeypatch.setattr(market_data, "_fetch_tencent_stock_list", lambda: expected)
-    monkeypatch.setattr(
-        market_data,
-        "_eastmoney_stock_list",
-        lambda: (_ for _ in ()).throw(AssertionError("Eastmoney must remain a fallback")),
-    )
+    monkeypatch.setattr(market_data, "_tencent_stock_list", lambda: expected)
 
     assert market_data.sync_stock_list() == expected
 
 
-def test_builtin_pool_keeps_tencent_kline_sync_running(monkeypatch):
-    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+def test_sync_stock_list_uses_tushare_only_after_tencent_failure(monkeypatch):
     monkeypatch.setattr(
         market_data,
-        "_universe_prefixes",
-        lambda: (("600",), ("688", "8", "4", "43")),
+        "_tencent_stock_list",
+        lambda: (_ for _ in ()).throw(market_data.MarketDataError("offline")),
     )
     monkeypatch.setattr(
-        market_data,
-        "_fetch_tencent_stock_list",
-        lambda: (_ for _ in ()).throw(market_data.MarketDataError("quote list unavailable")),
+        market_data.os,
+        "getenv",
+        lambda name, default="": "token" if name == "TUSHARE_TOKEN" else default,
     )
-    monkeypatch.setattr(
-        market_data,
-        "_eastmoney_stock_list",
-        lambda: (_ for _ in ()).throw(market_data.MarketDataError("Eastmoney blocked")),
-    )
-    monkeypatch.setattr(
-        market_data,
-        "_get_tencent_kline",
-        lambda code, period, limit=640: [
-            {"datetime": "2026-08-07", "open": 10, "high": 11, "low": 9,
-             "close": 10.5, "volume": 100, "amount": 1000}
-        ],
-    )
+    monkeypatch.setattr(market_data, "_tushare_stock_list", lambda: [{"code": "600000"}])
 
-    rows = market_data.sync_quote_history("2026-08-07", limit=80)
-
-    assert rows
-    assert {row["code"] for row in rows} == {"600000", "600036", "600519"}
-    assert {row["source"] for row in rows} == {"tencent-qfq"}
+    assert market_data.sync_stock_list() == [{"code": "600000"}]
 
 
 def test_clean_snapshot_handles_suspension_and_limit_rules():

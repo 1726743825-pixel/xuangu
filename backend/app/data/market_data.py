@@ -376,8 +376,8 @@ def _is_target_code(
     return code.startswith(allowed) and not code.startswith(excluded)
 
 
-def _candidate_codes() -> list[str]:
-    """Expand configured three-digit prefixes for Tencent batch validation."""
+def _tencent_stock_candidates() -> list[str]:
+    """Build the finite supported-code universe for Tencent quote discovery."""
     allowed, excluded = _universe_prefixes()
     candidates: set[str] = set()
     for prefix in allowed:
@@ -386,9 +386,18 @@ def _candidate_codes() -> list[str]:
             continue
         for suffix in range(1000):
             code = f"{prefix}{suffix:03d}"
-            if not code.startswith(excluded):
+            if _is_target_code(code, allowed, excluded):
                 candidates.add(code)
     return sorted(candidates)
+
+
+def _request_tencent_quote_batch(symbols: list[str]) -> str:
+    """Request Tencent's GBK quote response with the normal retry policy."""
+    return _request_text(
+        f"{TENCENT_QUOTE_URL}{','.join(symbols)}",
+        headers={"Referer": "https://gu.qq.com/"},
+        encoding="gbk",
+    )
 
 
 def _parse_tencent_stock_list(text: str) -> list[dict[str, Any]]:
@@ -396,12 +405,12 @@ def _parse_tencent_stock_list(text: str) -> list[dict[str, Any]]:
     allowed, excluded = _universe_prefixes()
     output: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for line in text.split(";"):
+    for line in text.replace(";", "\n").splitlines():
         if '="' not in line:
             continue
         body = line.split('="', 1)[1].rsplit('"', 1)[0]
         values = body.split("~")
-        if len(values) < 53:
+        if len(values) < 3:
             continue
         try:
             code = _normalise_code(values[2])
@@ -425,7 +434,7 @@ def _parse_tencent_stock_list(text: str) -> list[dict[str, Any]]:
     return output
 
 
-def _fetch_tencent_stock_list() -> list[dict[str, Any]]:
+def _tencent_stock_list() -> list[dict[str, Any]]:
     """Discover the configured A-share universe through Tencent HTTP quotes.
 
     Tencent does not expose a documented security-master endpoint.  We expand
@@ -435,82 +444,18 @@ def _fetch_tencent_stock_list() -> list[dict[str, Any]]:
     Endpoint format and source priority reference:
     https://github.com/simonlin1212/a-stock-data (Apache-2.0).
     """
-    candidates = _candidate_codes()
-    batch_size = max(50, min(int(os.getenv("TENCENT_LIST_BATCH_SIZE", "500")), 500))
-    batches = [candidates[index:index + batch_size] for index in range(0, len(candidates), batch_size)]
-
-    def fetch(codes: list[str]) -> list[dict[str, Any]]:
-        symbols = ",".join(_tencent_symbol(code) for code in codes)
-        text = _request_text(
-            TENCENT_QUOTE_URL + symbols,
-            headers={"Referer": "https://gu.qq.com/"},
-            encoding="gbk",
-        )
-        return _parse_tencent_stock_list(text)
-
-    workers = max(1, min(int(os.getenv("TENCENT_LIST_WORKERS", "4")), 8))
+    candidates = _tencent_stock_candidates()
+    batch_size = max(1, min(int(os.getenv("TENCENT_LIST_BATCH_SIZE", "80")), 80))
     output: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="tencent-list") as pool:
-        futures = [pool.submit(fetch, batch) for batch in batches]
-        for future in as_completed(futures):
-            output.extend(future.result())
-    return sorted({item["code"]: item for item in output}.values(), key=lambda item: item["code"])
-
-
-def _eastmoney_stock_list() -> list[dict[str, Any]]:
-    """Last-resort security master for networks where Eastmoney is reachable."""
-    raw_rows = _fetch_market_pages("f12,f13,f14,f26,f100")
-    allowed, excluded = _universe_prefixes()
-    stocks: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for row in raw_rows:
-        try:
-            code = _normalise_code(str(row.get("f12", "")))
-        except ValueError:
-            continue
-        if code in seen or not _is_target_code(code, allowed, excluded):
-            continue
-        seen.add(code)
-        name = str(row.get("f14") or "").strip()
-        raw_list_date = str(row.get("f26") or "").split(".", 1)[0]
-        list_date = (
-            f"{raw_list_date[:4]}-{raw_list_date[4:6]}-{raw_list_date[6:8]}"
-            if len(raw_list_date) == 8 and raw_list_date.isdigit()
-            else None
-        )
-        stocks.append(
-            {
-                "code": code,
-                "name": name,
-                "industry": str(row.get("f100") or "").strip() or None,
-                "exchange": _exchange(code, row.get("f13")),
-                "list_date": list_date,
-                "is_st": _is_st_name(name),
-                "source": "eastmoney",
-            }
-        )
-    return sorted(stocks, key=lambda item: item["code"])
-
-
-def _builtin_stock_pool() -> list[dict[str, Any]]:
-    """Return a bounded emergency pool derived from strategy.json prefixes."""
-    allowed, excluded = _universe_prefixes()
-    codes = [
-        code for code in _BUILTIN_FALLBACK_STOCKS
-        if _is_target_code(code, allowed, excluded)
-    ]
-    return [
-        {
-            "code": code,
-            "name": _BUILTIN_FALLBACK_STOCKS[code],
-            "industry": None,
-            "exchange": _exchange(code),
-            "list_date": None,
-            "is_st": False,
-            "source": "builtin-prefix-fallback",
-        }
-        for code in sorted(codes)
-    ]
+    for start in range(0, len(candidates), batch_size):
+        codes = candidates[start:start + batch_size]
+        output.extend(_parse_tencent_stock_list(
+            _request_tencent_quote_batch([_tencent_symbol(code) for code in codes])
+        ))
+    stocks = sorted({item["code"]: item for item in output}.values(), key=lambda item: item["code"])
+    if not stocks:
+        raise MarketDataError("Tencent stock-list response did not contain any target securities")
+    return stocks
 
 
 def sync_stock_list() -> list[dict[str, Any]]:
@@ -518,11 +463,11 @@ def sync_stock_list() -> list[dict[str, Any]]:
 
     Each row contains at least ``code``, ``name`` and ``industry`` plus market,
     listing date and ST status.  Source order is Tencent, optional Tushare,
-    Eastmoney (last external fallback), then a non-empty built-in emergency pool
-    derived from ``strategy.json``.
+    No Eastmoney security-master fallback is used: the overseas deployment
+    relies on Tencent HTTP and optionally Tushare when configured.
     """
     try:
-        stocks = _fetch_tencent_stock_list()
+        stocks = _tencent_stock_list()
         if stocks:
             return stocks
     except MarketDataError as exc:
@@ -539,19 +484,7 @@ def sync_stock_list() -> list[dict[str, Any]]:
         except MarketDataError as exc:
             logger.warning("Tushare stock-list fallback failed: %s", exc)
 
-    try:
-        stocks = _eastmoney_stock_list()
-        if stocks:
-            return stocks
-    except MarketDataError as exc:
-        logger.warning("Eastmoney last-resort stock-list sync failed: %s", exc)
-
-    stocks = _builtin_stock_pool()
-    logger.error(
-        "all remote stock-list sources failed; continuing with %d configured-prefix fallback stocks",
-        len(stocks),
-    )
-    return stocks
+    return []
 
 
 def _tushare_stock_list() -> list[dict[str, Any]]:
