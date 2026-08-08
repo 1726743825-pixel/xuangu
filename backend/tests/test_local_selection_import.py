@@ -42,6 +42,7 @@ def test_import_local_selection_posts_contract_with_token(monkeypatch):
     assert local_import.import_selections("2026-08-07", selector=_items, post=post) == 1
     assert captured["json"]["trade_date"] == "2026-08-07"
     assert captured["json"]["items"] == _items("")
+    assert "replace_existing" not in captured["json"]
     assert captured["headers"]["X-Job-Token"] == "secret-not-to-print"
 
 
@@ -65,13 +66,41 @@ def test_import_uses_actual_trade_date_emitted_by_weekend_selector(monkeypatch):
     assert captured["json"]["trade_date"] == "2026-08-07"
 
 
+def test_import_selection_sends_replace_flag_only_when_explicit(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
+    captured = {}
+
+    def post(_url, **kwargs):
+        captured.update(kwargs)
+        return _Response(1)
+
+    assert local_import.import_selections("2026-08-07", replace_existing=True, selector=_items, post=post) == 1
+    assert captured["json"]["replace_existing"] is True
+    assert "secret-not-to-print" not in str(captured["json"])
+
+
 def test_main_success_log_uses_actual_trade_date(monkeypatch, capsys):
     monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
-    monkeypatch.setattr(local_import, "_import_selection_run", lambda _: local_import.SelectionImportRun(10, "2026-08-07", _items("")))
+    monkeypatch.setattr(local_import, "_import_selection_run", lambda *_args, **_kwargs: local_import.SelectionImportRun(10, "2026-08-07", _items("")))
     monkeypatch.setattr(local_import, "import_quote_history", lambda *_: 120)
 
     assert local_import.main(["--trade-date", "2026-08-08", "--env-file", "unused.env"]) == 0
     assert "trade_date=2026-08-07, selections=10, quotes=120" in capsys.readouterr().out
+
+
+def test_main_passes_replace_flag_only_when_requested(monkeypatch):
+    monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
+    captured = {}
+
+    def selection_run(*_args, **kwargs):
+        captured.update(kwargs)
+        return local_import.SelectionImportRun(1, "2026-08-07", _items(""))
+
+    monkeypatch.setattr(local_import, "_import_selection_run", selection_run)
+    monkeypatch.setattr(local_import, "import_quote_history", lambda *_: 1)
+    assert local_import.main(["--replace-existing", "--env-file", "unused.env"]) == 0
+    assert captured["replace_existing"] is True
 
 
 def test_import_local_selection_rejects_missing_token(monkeypatch):

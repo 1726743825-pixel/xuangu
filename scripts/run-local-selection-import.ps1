@@ -2,7 +2,8 @@
 param(
     [string]$TradeDate = (Get-Date -Format 'yyyy-MM-dd'),
     [string]$PythonPath = '',
-    [string]$EnvFile = ''
+    [string]$EnvFile = '',
+    [switch]$ReplaceExisting
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,7 +23,9 @@ if (-not $EnvFile) {
 # backend/app.  Make the package root explicit so this works from Task
 # Scheduler as well as an interactive project-root PowerShell session.
 $env:PYTHONPATH = if ($env:PYTHONPATH) { "$BackendRoot;$env:PYTHONPATH" } else { $BackendRoot }
-& $PythonPath (Join-Path $BackendRoot 'existing\import_local_selections.py') --trade-date $TradeDate --env-file $EnvFile
+$arguments = @((Join-Path $BackendRoot 'existing\import_local_selections.py'), '--trade-date', $TradeDate, '--env-file', $EnvFile)
+if ($ReplaceExisting) { $arguments += '--replace-existing' }
+& $PythonPath @arguments
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

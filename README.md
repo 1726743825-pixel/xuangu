@@ -133,6 +133,14 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 .\scripts\run-local-selection-import.ps1 -TradeDate 2026-08-07
 ```
 
+默认导入只对相同股票/交易日/策略做 upsert，绝不会删除既有选股结果。只有在人工确认需要用本次完整快照替换同一**实际交易日、同一策略**的旧结果时，才显式运行：
+
+```powershell
+.\scripts\run-local-selection-import.ps1 -TradeDate 2026-08-07 -ReplaceExisting
+```
+
+`-ReplaceExisting` 不会上传到计划任务默认命令；不要把它加入每日自动任务。替换前确认结果属于单一策略，并确认目标日期无误。
+
 确认手动运行正常后，以下命令才会**创建/更新** Windows 任务计划程序任务；它每天本机时间 15:40 运行，仅在当前用户已登录且位于国内网络时执行：
 
 ```powershell

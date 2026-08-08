@@ -87,6 +87,7 @@ def _quote_import_url(selection_url: str) -> str:
 def _import_selection_run(
     trade_date: str,
     *,
+    replace_existing: bool = False,
     selector: Callable[[str], list[dict]] = run_selection,
     post: Callable[..., httpx.Response] = httpx.post,
 ) -> SelectionImportRun:
@@ -99,10 +100,13 @@ def _import_selection_run(
     result_date = _result_trade_date(items)
 
     try:
+        request_body = {"trade_date": result_date, "items": items}
+        if replace_existing:
+            request_body["replace_existing"] = True
         response = post(
             url,
             headers={"X-Job-Token": token},
-            json={"trade_date": result_date, "items": items},
+            json=request_body,
             timeout=60.0,
         )
         response.raise_for_status()
@@ -123,11 +127,14 @@ def _import_selection_run(
 def import_selections(
     trade_date: str,
     *,
+    replace_existing: bool = False,
     selector: Callable[[str], list[dict]] = run_selection,
     post: Callable[..., httpx.Response] = httpx.post,
 ) -> int:
     """Compatibility wrapper returning only the imported item count."""
-    return _import_selection_run(trade_date, selector=selector, post=post).count
+    return _import_selection_run(
+        trade_date, replace_existing=replace_existing, selector=selector, post=post,
+    ).count
 
 
 def _normalise_quote_rows(
@@ -222,6 +229,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="本地选股并导入 Railway")
     parser.add_argument("--trade-date", default=date.today().isoformat(), help="交易日 YYYY-MM-DD（默认今天）")
     parser.add_argument(
+        "--replace-existing", action="store_true",
+        help="人工确认后替换同一实际交易日、同一策略的旧快照（默认关闭）",
+    )
+    parser.add_argument(
         "--env-file",
         default=str(Path(__file__).resolve().parents[2] / ".env"),
         help="可选的本地环境变量文件（默认项目根目录 .env）",
@@ -229,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _load_env_file(Path(args.env_file))
     try:
-        selection_run = _import_selection_run(args.trade_date)
+        selection_run = _import_selection_run(args.trade_date, replace_existing=args.replace_existing)
         quote_count = import_quote_history(selection_run.trade_date, selection_run.items)
     except (SelectionImportError, LocalSelectionDataError, ValueError) as exc:
         print(f"本地选股导入失败: {exc}", file=sys.stderr)
