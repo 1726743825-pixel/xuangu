@@ -4,7 +4,7 @@ from datetime import date, datetime
 from threading import Lock
 
 from . import db
-from .integrations.selection_adapter import run_selection
+from .strategy.engine import run_selection
 
 _lock = Lock()
 

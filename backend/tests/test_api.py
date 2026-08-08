@@ -5,13 +5,22 @@ from app.main import app
 
 def test_health():
     with TestClient(app) as client:
-        assert client.get("/api/health").json()["status"] == "ok"
+        response = client.get("/api/health")
+        assert response.status_code == 200
+        assert response.json()["data"]["status"] == "ok"
 
 
-def test_run_and_read_selection():
+def test_list_stocks_has_api_envelope():
     with TestClient(app) as client:
-        run = client.post("/api/jobs/run-selection", json={"trade_date": "2099-01-02"})
-        assert run.status_code == 200
-        data = client.get("/api/selections?date=2099-01-02").json()
-        assert data["count"] >= 1
-        assert "reasons" in data["items"][0]
+        response = client.get("/api/stocks?page=1&size=10")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["code"] == 0
+        assert {"items", "page", "size", "total"} <= payload["data"].keys()
+
+
+def test_run_selection_requires_configured_token(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    with TestClient(app) as client:
+        response = client.post("/api/selections/run", json={"trade_date": "2099-01-02"})
+        assert response.status_code == 401

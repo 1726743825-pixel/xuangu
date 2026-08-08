@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+DataT = TypeVar("DataT")
+
+
+class APIResponse(BaseModel, Generic[DataT]):
+    """The envelope returned by every public REST endpoint."""
+
+    code: int = 0
+    data: DataT
+    message: str = ""
 
 
 class SelectionResult(BaseModel):
@@ -57,4 +68,45 @@ class JobRun(BaseModel):
 
 
 class RunSelectionRequest(BaseModel):
-    trade_date: str | None = None
+    model_config = ConfigDict(populate_by_name=True)
+
+    trade_date: date | None = Field(default=None, alias="date")
+
+
+class HealthData(BaseModel):
+    status: str
+    service: str
+
+
+class StockSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    code: str
+    name: str
+    industry: str | None = None
+    list_date: date | None = None
+    is_st: bool
+
+
+class StockPage(BaseModel):
+    items: list[StockSummary]
+    page: int
+    size: int
+    total: int
+
+
+class StockDetail(StockSummary):
+    latest_quote: Quote | None = None
+
+
+class SelectionPage(BaseModel):
+    date: date
+    strategy: str | None = None
+    items: list[SelectionResult]
+    count: int
+
+
+class RunSelectionAccepted(BaseModel):
+    status: str
+    date: date
+    message: str

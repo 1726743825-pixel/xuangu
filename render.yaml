@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: xuangu-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerCommand: sh -c "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}"
+    healthCheckPath: /api/health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: DATABASE_PATH
+        value: /tmp/xuangu.db
+      - key: ENABLE_SCHEDULER
+        value: "false"
+      - key: CORS_ORIGINS
+        sync: false
+      - key: JOB_API_TOKEN
+        generateValue: true
+      - key: TUSHARE_TOKEN
+        sync: false
+      - key: EASTMONEY_MIN_INTERVAL
+        value: "1.0"

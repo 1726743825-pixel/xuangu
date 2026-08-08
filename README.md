@@ -1,75 +1,136 @@
 # 选股每日选股台
 
-一个适合本机运行的 A 股每日选股台：FastAPI 后端 + SQLite + Next.js 前端。
+适合本机运行的 A 股每日选股台：FastAPI 后端、SQLite 和 Next.js 前端。
 
 ## 快速启动
 
-### 1. 启动后端
-
 ```powershell
+# 后端
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 uvicorn app.main:app --reload --port 8000
-```
 
-### 2. 启动前端
-
-```powershell
+# 前端（另开终端）
 cd frontend
 npm install
 npm run dev
 ```
 
-打开 http://localhost:3000 。后端 API 文档位于 http://localhost:8000/docs。
+打开 http://localhost:3000；后端 OpenAPI 文档位于 http://localhost:8000/docs。
 
-## 已放入的现有脚本
+## 架构与分支协作
 
-你提供的 Node.js 选股脚本和配置已复制到 `backend/existing/source/`，包括行情数据源、三个选股脚本、策略规格和政策评分文件。原目录 `D:\Program Files\xuangu` 未被修改。
+所有分支必须以 [API 契约](backend/docs/api-contract.md) 为接口唯一事实来源；不要以页面实现、演示数据或旧适配器反推接口。
 
-这些脚本当前作为原始资产保存，网站仍使用适配器运行，避免启动网站时自动触发外部行情请求。下一步接入时优先使用 `stock_screener_latest.js`，再将其输出转换为网站的统一结果格式。
+| 分支 | 职责 | 上游依赖 | 合并前必须确认 |
+| --- | --- | --- | --- |
+| `feature/database` | SQLAlchemy 模型、Alembic 迁移、DAO | 无 | 表、约束、索引和迁移可升级 |
+| `feature/market-data` | 股票主数据、交易日、日线采集与入库 | database | 写入 `stocks`、`trade_calendar`、`daily_quotes` |
+| `feature/strategy-engine` | 指标、策略执行、回测、自定义脚本适配 | database、market-data | 只通过 DAO 读写；输出选股契约 |
+| `feature/backend-api` | FastAPI 路由与响应序列化 | strategy-engine | 与 API 契约逐字段一致 |
+| `feature/frontend-dashboard` | 数据看板和详情页数据接入 | backend-api | 严格按 API 契约消费 |
+| `feature/product-ui` | 视觉、交互与组件体系 | frontend-dashboard | 不改变接口字段语义 |
+| `feature/scheduler` | 收盘后同步与选股调度、运行审计 | market-data、strategy-engine | 幂等、避免重入、写入 `job_runs` |
+| `feature/testing-deployment` | 测试、镜像、部署与迁移验证 | 所有功能分支 | 全量测试、Alembic 升级和健康检查通过 |
 
-## 接入你的现有脚本
+合并顺序为：Phase 1 `database → market-data`；Phase 2 `strategy-engine → backend-api`；Phase 3 `frontend-dashboard → product-ui`；Phase 4 `scheduler + testing-deployment`。跨阶段合并前，必须先完成契约评审，尤其检查选股结果和 K 线字段、日期格式及空值约定。
 
-如果希望直接接入 Python 版本，可将选股脚本命名为 `selection_script.py` 放到 `backend/existing/`，并提供：
+## 数据库定稿（v1）
 
-```python
-def run_selection(trade_date: str | None = None) -> list[dict]:
-    return [
-        {
-            "code": "600519",
-            "name": "贵州茅台",
-            "trade_date": trade_date,
-            "price": 1500.0,
-            "change_pct": 1.2,
-            "score": 88,
-            "strategy_name": "你的策略",
-            "reasons": ["站上20日均线"],
-            "indicators": {"ma20": 1480, "rsi": 62},
-        }
-    ]
-```
+`backend/app/db/migrations/versions/20260808_0001_initial_schema.py` 是当前数据库结构的唯一迁移基线。共五张表：`stocks`、`trade_calendar`、`daily_quotes`、`selection_results`、`job_runs`。其中日线唯一键为 `(stock_code, trade_date)`，选股结果唯一键为 `(stock_code, trade_date, strategy_name)`；完整字段定义见 API 契约。后续结构变更只能新增 Alembic migration，禁止改写已合并迁移。
 
-现在没有放入外部脚本时，系统会使用内置演示数据，保证页面可以先运行和体验。
+## K 线格式标准
 
-## 环境变量
+面向 ECharts 的 K 线点固定为 `[date, open, close, low, high, vol]`，日期为 `YYYY-MM-DD`，价格和成交量均为数值。数据库内部保持具名的 `daily_quotes` 字段；由后端 API 在响应边界进行序列化，前端不得依赖数据库列顺序。完整响应示例和空值规则见 API 契约。
 
-复制 `.env.example` 为 `.env`，按需配置数据源和前端 API 地址。真实 API key 不要提交到 Git。
+## 接入现有选股脚本
 
-## 测试
+Python 自定义策略的唯一入口是 `backend/existing/selection_script.py`，由 `app.strategy.engine` 动态加载；当前文件尚未放入仓库。脚本必须只定义 `run_selection(trade_date: str) -> list[dict]`，并返回策略引擎契约中的字段。Node.js 源资产保留在 `backend/existing/source/`，不能由 Web 请求直接执行；如需使用，先由受控包装器转换为同一 Python/JSON 输出。
 
-```powershell
-cd backend
-pytest
-```
+现有 Node.js 资产包括行情数据源、三个选股脚本、策略规格和政策评分文件；原始目录 `D:\Program Files\xuangu` 未被修改。
 
-## Docker
+`backend/app/integrations/selection_adapter.py` 属于旧演示适配器，不是新策略引擎入口，后续分支不得将其重新接入任务调度。脚本返回的理由、价格和指标必须被封装进 `selection_results.signals` 的规范 JSON，避免 API 层丢失展示字段。
+
+## Deployment
+
+### 本地 Docker Compose
+
+根目录 `Dockerfile` 是多阶段、多目标构建：前端使用 `node:20-alpine` 完成依赖安装和 Next.js standalone 构建，后端使用 `python:3.11-slim` 预构建 wheels 后生成运行镜像。`docker-compose.yml` 分别选择 `frontend` 和 `backend` 目标，并通过命名卷持久化 SQLite。
 
 ```powershell
+Copy-Item .env.example .env
 docker compose up --build
 ```
 
-## 功能分支
+打开 http://localhost:3000；API 健康检查为 http://localhost:8000/api/health。停止服务使用 `docker compose down`；只有明确需要删除本地 SQLite 数据时才使用 `docker compose down --volumes`。
 
-项目预留了 `feature/product-ui`、`feature/market-data`、`feature/strategy-engine`、`feature/backend-api`、`feature/database`、`feature/scheduler`、`feature/frontend-dashboard`、`feature/testing-deployment` 分支；当前可运行版本合并在 `main`。
+主要环境变量如下：
+
+| 变量 | 用途 | 本地默认值 |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_BASE` | 浏览器访问的后端公网地址；构建前端时写入 | `http://localhost:8000` |
+| `DATABASE_PATH` | SQLite 文件路径；相对路径按 `backend/` 解析 | `data/xuangu.db` |
+| `DATABASE_URL` | 可选 SQLAlchemy URL，设置后优先于 `DATABASE_PATH` | 未设置 |
+| `CORS_ORIGINS` | 允许的前端 Origin，逗号分隔 | 本地 3000 端口 |
+| `ENABLE_SCHEDULER` | 是否启用 API 进程内调度器 | `true` |
+| `SELECTION_RUN_HOUR` / `SELECTION_RUN_MINUTE` | Asia/Shanghai 时区的进程内选股时间 | `15` / `30` |
+| `JOB_API_TOKEN` | 保护云端选股触发接口；生产必须使用随机长字符串 | `change-me` |
+| `TUSHARE_TOKEN` | 可选，启用 Tushare 历史行情 | 未设置 |
+| `EASTMONEY_MIN_INTERVAL` | 东方财富请求最小间隔（秒） | `1.0` |
+
+完整清单和示例值见 `.env.example`。`.env` 已被 Git 忽略，不要提交真实令牌。
+
+### CI 与每日选股
+
+`.github/workflows/ci.yml` 在 push 和 pull request 时并行运行 Python 3.11 下的全量 Pytest，以及 Node.js 20/pnpm 下的 Next.js production build。API 测试包含健康检查、基础列表响应和定时任务鉴权。
+
+`.github/workflows/daily-selection.yml` 每天在 `07:30 UTC`（北京时间 `15:30`）调用已部署后端，也支持手动指定交易日。非交易日由行情/策略层返回空结果。仓库中需配置：
+
+- Actions variable `BACKEND_URL`：后端公网根地址，例如 `https://xuangu-api.onrender.com`。
+- Actions secret `JOB_API_TOKEN`：必须与后端同名环境变量一致。
+
+云端部署建议设置 `ENABLE_SCHEDULER=false`，由 GitHub Actions 单点触发，避免应用内调度器与云工作流重复执行。
+
+### Render / Railway 后端
+
+Render 可直接导入根目录 `render.yaml`。Blueprint 使用免费 Web Service、Dockerfile 最终 `backend` 阶段和 `/api/health` 健康检查。创建后设置 `CORS_ORIGINS` 为 Vercel 域名，并把 Render 生成的 `JOB_API_TOKEN` 同步到 GitHub Actions。Render 免费实例不提供持久磁盘，因此配置中的 `/tmp/xuangu.db` 会在重建或休眠恢复后丢失；免费方案适合演示，需长期保留结果时请选择持久磁盘或外部数据库。
+
+Railway 会读取 `railway.toml` 和根目录 Dockerfile。服务变量至少设置：
+
+```text
+DATABASE_PATH=/app/data/xuangu.db
+ENABLE_SCHEDULER=false
+CORS_ORIGINS=https://your-frontend.vercel.app
+JOB_API_TOKEN=<random-long-secret>
+TUSHARE_TOKEN=<optional>
+```
+
+如需持久化 SQLite，在 Railway 控制台挂载 Volume 到 `/app/data`。部署成功后将生成的公网域名写入 GitHub `BACKEND_URL`。
+
+### Vercel 前端
+
+在 Vercel 导入仓库时将 **Root Directory** 设置为 `frontend`；`frontend/vercel.json` 会使用 Next.js 和锁定的 pnpm 依赖。部署前设置：
+
+```text
+NEXT_PUBLIC_API_BASE=https://your-backend.example.com
+```
+
+该变量会在 Next.js 构建时写入浏览器包；修改后必须重新部署。后端的 `CORS_ORIGINS` 应填入实际 Vercel Production 域名，多个域名用逗号分隔。
+
+### 本地验证
+
+```powershell
+Set-Location backend
+python -m pytest -q
+
+Set-Location ../frontend
+corepack pnpm install --frozen-lockfile
+corepack pnpm build
+
+Set-Location ..
+docker compose config
+docker build --target backend -t xuangu-backend .
+docker build --target frontend -t xuangu-frontend .
+```

@@ -1,0 +1,39 @@
+name: Daily stock selection
+
+on:
+  schedule:
+    # GitHub cron uses UTC. 07:30 UTC = 15:30 Asia/Shanghai.
+    - cron: "30 7 * * *"
+  workflow_dispatch:
+    inputs:
+      trade_date:
+        description: Optional trade date (YYYY-MM-DD)
+        required: false
+        type: string
+
+concurrency:
+  group: daily-stock-selection
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BACKEND_URL: ${{ vars.BACKEND_URL }}
+      JOB_API_TOKEN: ${{ secrets.JOB_API_TOKEN }}
+      TRADE_DATE: ${{ inputs.trade_date }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate cloud configuration
+        run: |
+          test -n "$BACKEND_URL" || { echo "Repository variable BACKEND_URL is required"; exit 1; }
+          test -n "$JOB_API_TOKEN" || { echo "Repository secret JOB_API_TOKEN is required"; exit 1; }
+      - name: Trigger selection
+        run: python scripts/trigger_daily_selection.py
