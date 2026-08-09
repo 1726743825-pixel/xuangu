@@ -118,7 +118,13 @@ Content-Type: application/json
 
 ### 本机选股并导入 Railway
 
-海外 Railway 不能可靠访问国内免费行情源时，使用国内网络的 Windows 机器执行本地选股，并将结果上传到 Railway。选股导入成功后，同一任务才会依次上传本次入选股票的真实前复权日 K，以及腾讯真实 30 分钟 K；日 K 每只最多 120 个交易日，30 分钟 K 每只最多 480 根，所有请求均会分批限制在接口的 5,000 条上限内。先在项目根目录的未提交 `.env` 中配置：
+海外 Railway 不能可靠访问国内免费行情源时，使用国内网络的 Windows 机器执行本地选股，并将结果上传到 Railway。本机行情默认且仅使用 AKShare 的新浪适配器：为官方结果补充固定选入价及其真实交易日期、上传五个固定指数、入选股票最近真实收盘快照，以及真实未复权日 K/30 分钟 K。日 K 每只最多 120 个交易日，30 分钟 K 每只最多 480 根，所有请求均会分批限制在接口的 5,000 条上限内；`source=akshare-sina` 与真实成交额会一并持久化。先安装本机专用依赖（不会加入 Railway 生产 requirements）：
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pip install -r .\backend\requirements-local.txt
+```
+
+再在项目根目录的未提交 `.env` 中配置：
 
 ```text
 SELECTION_IMPORT_URL=https://xuangu-production.up.railway.app/api/selections/import
@@ -149,11 +155,17 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 检查任务：`Get-ScheduledTask -TaskName Xuangu-LocalSelectionImport`。任务定义不保存令牌；令牌从未提交的 `.env` 或当前用户环境变量读取。空选股结果会被拒绝上传，避免用空数据覆盖网站已有结果。周六、周日会在调用官方脚本前安全跳过且不上传；交易日官方脚本或报告不可用时任务以非零退出码失败，也不会上传任何结果。
 
-日 K 与 30 分钟 K 导入地址分别由 `SELECTION_IMPORT_URL` 自动派生为同域的 `/api/quotes/import` 和 `/api/quotes/intraday/import`，无需配置第二个 URL 或令牌。个别入选股票的 K 线不可用时会记录代码并继续上传其他真实数据；如果所有入选股票都没有可用日 K 或 30 分钟 K，任务会以非零退出码失败，避免把空结果伪装成成功。选股导入失败时不会启动任何 K 线同步。
+日 K、30 分钟 K 和市场快照地址都由 `SELECTION_IMPORT_URL` 自动派生，无需配置第二个 URL 或令牌。五指数必须整包发送；北证50在 AKShare 新浪源暂不可用时固定发送 `available=false` 与空行情，不用其他指数冒充。个别入选股票行情不可用时会记录代码并继续其他真实数据；所有数据为空或任一接口失败时任务以非零退出码结束。权威选股导入成功后，即使后续行情网络失败，选股结果仍保留，错误会按“日K / 30m K / 指数与当前价”分项报告。
 
-官方报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果；日 K 同步仍只服务详情页和收益计算，不参与候选股计算。
+官方报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果。报告自带价格时优先保留；否则用报告日期之前最近一个真实 AKShare 日K收盘作为 `selection_price`，同时保存该 bar 的 `selection_price_date`。当前价也来自最近真实日K，时间固定为该 bar 日期的收盘时刻；周末报告不会被标记成周末实时行情。行情同步只服务展示和收益计算，不参与候选股计算。
 
-本机数据层提供 `build_selected_30m_sync_payload(items)`：它只读取官方报告已经入选的代码，腾讯 `mkline` 每只最多保留 480 根（约 60 个交易日），价格为原始分钟价、`adjustment="none"`，周末报告不会产生 bar。该 payload 只用于本机导入；选股策略不读取其中的分钟数据。
+如需为已经入库的历史/周末官方报告补齐行情，使用独立受控命令；它只读取该日期现有选股，不运行 D 盘 Node、不重新选股、不替换或删除任何结果：
+
+```powershell
+.\scripts\refresh-existing-selection-market-data.ps1 -TradeDate 2026-08-09
+```
+
+该刷新命令会上传最近真实交易日的日K、30分钟K、五指数和股票收盘快照，所有日期时间沿用真实 bar。它不在 Windows 计划任务中；每日任务仍为15:05，周末会在运行官方脚本前安全跳过。
 
 ### 一次性指定官方报告迁移
 

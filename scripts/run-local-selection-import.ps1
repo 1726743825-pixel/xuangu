@@ -12,7 +12,7 @@ if (-not $PythonPath) {
     $PythonPath = Join-Path $ProjectRoot 'backend\.venv\Scripts\python.exe'
 }
 if (-not (Test-Path -LiteralPath $PythonPath)) {
-    throw "Python executable not found: $PythonPath. Create backend/.venv and install requirements-dev.txt first."
+    throw "Python executable not found: $PythonPath. Create backend/.venv and install requirements-local.txt first."
 }
 
 $BackendRoot = Join-Path $ProjectRoot 'backend'
