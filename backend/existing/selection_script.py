@@ -16,6 +16,8 @@ import re
 import subprocess
 from typing import Any
 
+from app.data.market_data import fill_missing_selection_prices
+
 
 AUTHORITATIVE_STRATEGY_NAME = "超短线技术共振"
 DEFAULT_SCREENER_DIR = Path(r"D:\Program Files\xuangu")
@@ -132,7 +134,10 @@ def parse_official_report(path: Path) -> list[dict[str, Any]]:
         })
     if not items:
         raise LocalSelectionDataError(f"官方报告未包含可导入的选股行: {path.name}")
-    return items
+    # The report is the sole authority for its candidates, scores and metrics.
+    # It omits a price column, so the data layer may only enrich the already
+    # parsed rows with that report session's daily close.
+    return fill_missing_selection_prices(items)
 
 
 def _newest_report(report_dir: Path, before: dict[Path, int]) -> Path:

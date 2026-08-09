@@ -214,6 +214,46 @@ def test_get_kline_prefers_tencent_and_accepts_prefixed_code(monkeypatch):
     assert rows == [{"code": "600519", "period": "day", "source": "tencent"}]
 
 
+def test_fill_missing_selection_prices_reads_only_selected_codes_and_preserves_fields():
+    calls = []
+    items = [
+        {"code": "600519", "trade_date": "2026-08-07", "price": None, "score": 91.0,
+         "industry": "白酒", "change_pct": 1.2, "turnover": 3.4, "board_count": 2},
+        {"code": "300750", "trade_date": "2026-08-07", "price": None, "score": 88.0,
+         "industry": "电池", "change_pct": 2.3, "turnover": 4.5, "board_count": 0},
+    ]
+
+    def loader(code, period):
+        calls.append((code, period))
+        return [
+            {"datetime": "2026-08-06", "close": 10.0},
+            {"datetime": "2026-08-07", "close": 11.23456 if code == "600519" else 22.0},
+        ]
+
+    enriched = market_data.fill_missing_selection_prices(items, kline_loader=loader)
+
+    assert calls == [("600519", "day"), ("300750", "day")]
+    assert [item["code"] for item in enriched] == ["600519", "300750"]
+    assert [item["score"] for item in enriched] == [91.0, 88.0]
+    assert enriched[0]["price"] == 11.2346
+    assert enriched[1]["price"] == 22.0
+    assert enriched[0]["industry"] == "白酒"
+    assert enriched[1]["turnover"] == 4.5
+    assert items[0]["price"] is None
+
+
+def test_fill_missing_selection_prices_leaves_missing_session_close_as_none():
+    items = [{"code": "600519", "trade_date": "2026-08-07", "price": None, "score": 91.0}]
+
+    enriched = market_data.fill_missing_selection_prices(
+        items,
+        kline_loader=lambda code, period: [{"datetime": "2026-08-08", "close": 99.0}],
+    )
+
+    assert enriched[0]["price"] is None
+    assert enriched[0]["score"] == 91.0
+
+
 def test_quote_sources_respects_order_and_requires_tushare_token(monkeypatch):
     monkeypatch.setenv("QUOTE_SOURCES", "sina,baidu,tencent,tushare,baidu")
     monkeypatch.delenv("TUSHARE_TOKEN", raising=False)

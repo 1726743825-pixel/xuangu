@@ -31,7 +31,7 @@ from pathlib import Path
 import random
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -1266,7 +1266,55 @@ def get_kline(stock_code: str, period: str) -> list[dict[str, Any]]:
         return []
 
 
+def fill_missing_selection_prices(
+    items: list[dict[str, Any]],
+    *,
+    kline_loader: Callable[[str, str], list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Fill only missing selected-item prices from the report session's close.
+
+    The authoritative local screener owns candidate selection, score, order and
+    every non-price display metric.  Its HTML report is emitted after market
+    close (15:05), so ``price`` means the same ``trade_date`` daily close, not
+    a later real-time quote.  Only codes already present in ``items`` are read;
+    an unavailable exact-date bar deliberately leaves the price as ``None``.
+    """
+    loader = kline_loader or get_kline
+    closes: dict[tuple[str, str], float | None] = {}
+    enriched: list[dict[str, Any]] = []
+    for item in items:
+        copied = dict(item)
+        if copied.get("price") is not None:
+            enriched.append(copied)
+            continue
+        try:
+            code = _normalise_code(str(copied.get("code", "")))
+            trade_date = _parse_date(str(copied.get("trade_date", ""))).isoformat()
+        except ValueError:
+            enriched.append(copied)
+            continue
+        key = (code, trade_date)
+        if key not in closes:
+            try:
+                bars = loader(code, "day")
+            except (MarketDataError, ValueError):
+                bars = []
+            close = next(
+                (
+                    _price(bar.get("close"))
+                    for bar in reversed(bars)
+                    if str(bar.get("datetime", ""))[:10] == trade_date
+                    and _price(bar.get("close")) is not None
+                ),
+                None,
+            )
+            closes[key] = close
+        copied["price"] = closes[key]
+        enriched.append(copied)
+    return enriched
+
+
 __all__ = [
-    "MarketDataError", "get_kline", "latest_trading_date", "sync_daily_quotes",
+    "MarketDataError", "fill_missing_selection_prices", "get_kline", "latest_trading_date", "sync_daily_quotes",
     "sync_quote_history", "sync_stock_list",
 ]

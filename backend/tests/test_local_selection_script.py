@@ -14,7 +14,8 @@ selection_script = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(selection_script)
 
 
-def test_parse_official_report_preserves_authoritative_fields():
+def test_parse_official_report_preserves_authoritative_fields(monkeypatch):
+    monkeypatch.setattr(selection_script, "fill_missing_selection_prices", lambda items: items)
     items = selection_script.parse_official_report(FIXTURE_PATH)
 
     assert len(items) == 2
@@ -30,6 +31,23 @@ def test_parse_official_report_preserves_authoritative_fields():
     assert first["turnover"] == 11.7
     assert first["board_count"] == 1
     assert first["indicators"]["official_details"].startswith("MA5开口")
+
+
+def test_parse_official_report_only_applies_price_enricher(monkeypatch):
+    seen = []
+
+    def enrich(items):
+        seen.extend(items)
+        return [{**item, "price": 123.45} for item in items]
+
+    monkeypatch.setattr(selection_script, "fill_missing_selection_prices", enrich)
+
+    items = selection_script.parse_official_report(FIXTURE_PATH)
+
+    assert [item["code"] for item in items] == ["301080", "600267"]
+    assert [item["score"] for item in items] == [87.0, 85.0]
+    assert [item["price"] for item in items] == [123.45, 123.45]
+    assert [item["price"] for item in seen] == [None, None]
 
 
 def test_parse_official_report_rejects_reports_without_rows(tmp_path):
