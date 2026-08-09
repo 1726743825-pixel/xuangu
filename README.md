@@ -118,7 +118,7 @@ Content-Type: application/json
 
 ### 本机选股并导入 Railway
 
-海外 Railway 不能可靠访问国内免费行情源时，使用国内网络的 Windows 机器执行本地选股，并将结果上传到 Railway。选股导入成功后，同一任务会为本次入选股票再读取本机数据层的真实前复权日 K，并上传每只最近最多 120 个交易日；上传量会自动限制在接口的 5,000 条上限内。先在项目根目录的未提交 `.env` 中配置：
+海外 Railway 不能可靠访问国内免费行情源时，使用国内网络的 Windows 机器执行本地选股，并将结果上传到 Railway。选股导入成功后，同一任务才会依次上传本次入选股票的真实前复权日 K，以及腾讯真实 30 分钟 K；日 K 每只最多 120 个交易日，30 分钟 K 每只最多 480 根，所有请求均会分批限制在接口的 5,000 条上限内。先在项目根目录的未提交 `.env` 中配置：
 
 ```text
 SELECTION_IMPORT_URL=https://xuangu-production.up.railway.app/api/selections/import
@@ -149,11 +149,11 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 检查任务：`Get-ScheduledTask -TaskName Xuangu-LocalSelectionImport`。任务定义不保存令牌；令牌从未提交的 `.env` 或当前用户环境变量读取。空选股结果会被拒绝上传，避免用空数据覆盖网站已有结果。周六、周日会在调用官方脚本前安全跳过且不上传；交易日官方脚本或报告不可用时任务以非零退出码失败，也不会上传任何结果。
 
-日 K 导入地址由 `SELECTION_IMPORT_URL` 自动派生为同域的 `/api/quotes/import`，无需配置第二个 URL 或令牌。个别入选股票的 K 线不可用时会记录代码并继续上传其他真实数据；如果所有入选股票都没有可用日 K，任务会以非零退出码失败，避免把空结果伪装成成功。
+日 K 与 30 分钟 K 导入地址分别由 `SELECTION_IMPORT_URL` 自动派生为同域的 `/api/quotes/import` 和 `/api/quotes/intraday/import`，无需配置第二个 URL 或令牌。个别入选股票的 K 线不可用时会记录代码并继续上传其他真实数据；如果所有入选股票都没有可用日 K 或 30 分钟 K，任务会以非零退出码失败，避免把空结果伪装成成功。选股导入失败时不会启动任何 K 线同步。
 
 官方报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果；日 K 同步仍只服务详情页和收益计算，不参与候选股计算。
 
-本机数据层还提供 `build_selected_30m_sync_payload(items)`，供后续 30 分钟 K 线导入接口使用：它只读取官方报告已经入选的代码，腾讯 `mkline` 每只最多保留 480 根（约 60 个交易日），价格为原始分钟价、`adjustment="none"`，周末报告不会产生 bar。腾讯接口没有可验证的逐根成交额，因此 payload 固定返回 `amount: null`、`amount_estimated: true`；前端若需要成交额，仅可用 `close * volume` 作**显示估算**，不得作为真实成交额或策略输入。
+本机数据层提供 `build_selected_30m_sync_payload(items)`：它只读取官方报告已经入选的代码，腾讯 `mkline` 每只最多保留 480 根（约 60 个交易日），价格为原始分钟价、`adjustment="none"`，周末报告不会产生 bar。该 payload 只用于本机导入；选股策略不读取其中的分钟数据。
 
 ### Render / Railway 后端
 

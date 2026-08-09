@@ -8,7 +8,7 @@ prints, serialises, or logs it.
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime
 from math import isfinite
 import os
 from pathlib import Path
@@ -89,12 +89,20 @@ def _api_config() -> tuple[str, str]:
     return url, token
 
 
-def _quote_import_url(selection_url: str) -> str:
-    """Derive the sibling quote endpoint without adding another secret setting."""
+def _sibling_api_url(selection_url: str, path: str) -> str:
+    """Derive a same-origin API endpoint without adding another secret setting."""
     parsed = urlsplit(selection_url)
     if not parsed.scheme or not parsed.netloc or parsed.path.rstrip("/") != "/api/selections/import":
         raise SelectionImportError("SELECTION_IMPORT_URL 必须指向 /api/selections/import")
-    return urlunsplit((parsed.scheme, parsed.netloc, "/api/quotes/import", "", ""))
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _quote_import_url(selection_url: str) -> str:
+    return _sibling_api_url(selection_url, "/api/quotes/import")
+
+
+def _intraday_quote_import_url(selection_url: str) -> str:
+    return _sibling_api_url(selection_url, "/api/quotes/intraday/import")
 
 
 def _import_selection_run(
@@ -238,6 +246,112 @@ def import_quote_history(
     return count
 
 
+def _normalise_intraday_quote_rows(rows: list[dict], selected: dict[str, str]) -> tuple[list[dict], list[str]]:
+    """Keep only valid real 30-minute bars for the official selected codes."""
+    per_stock: dict[str, list[dict]] = {code: [] for code in selected}
+    for row in rows:
+        code = str(row.get("code") or row.get("stock_code") or "").zfill(6)
+        if code not in per_stock or row.get("interval") != "30m":
+            continue
+        try:
+            trade_datetime = datetime.fromisoformat(str(row.get("datetime") or row.get("trade_datetime") or ""))
+            values = {field: float(row[field]) for field in ("open", "high", "low", "close", "volume")}
+            amount = row.get("amount")
+            if amount is not None:
+                amount = float(amount)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            not all(isfinite(value) and value >= 0 for value in values.values())
+            or (amount is not None and (not isfinite(amount) or amount < 0))
+            or values["high"] < values["low"]
+        ):
+            continue
+        per_stock[code].append({
+            "stock_code": code,
+            "stock_name": str(row.get("name") or row.get("stock_name") or selected[code]),
+            "interval": "30m",
+            "trade_datetime": trade_datetime.isoformat(),
+            **values,
+            "amount": amount,
+            "amount_estimated": bool(row.get("amount_estimated", row.get("estimated", False))),
+        })
+
+    cleaned: list[dict] = []
+    missing: list[str] = []
+    for code, bars in per_stock.items():
+        # The data-layer contract already limits Tencent rows, while this second
+        # guard preserves the operational per-stock cap if that contract changes.
+        unique = {str(bar["trade_datetime"]): bar for bar in bars}
+        retained = [unique[key] for key in sorted(unique)[-480:]]
+        if not retained:
+            missing.append(code)
+        cleaned.extend(retained)
+    return cleaned, missing
+
+
+def _load_selected_intraday_history(
+    items: list[dict],
+    *,
+    payload_builder: Callable[..., dict] = market_data.build_selected_30m_sync_payload,
+) -> list[dict]:
+    selected = {
+        str(item.get("code") or item.get("stock_code") or "").zfill(6): str(item.get("name") or item.get("stock_name") or "未命名股票")
+        for item in items
+    }
+    selected.pop("000000", None)
+    if not selected:
+        raise SelectionImportError("选股结果缺少可上传30m K的股票代码")
+    try:
+        payload = payload_builder(items, limit=480)
+    except market_data.MarketDataError as exc:
+        raise SelectionImportError(f"30m K行情读取失败: {exc}") from exc
+    except Exception as exc:
+        raise SelectionImportError(f"30m K行情读取出现意外错误: {type(exc).__name__}: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("interval") != "30m" or not isinstance(payload.get("bars"), list):
+        raise SelectionImportError("30m K行情返回格式无效")
+    quotes, missing = _normalise_intraday_quote_rows(payload["bars"], selected)
+    if missing:
+        print(f"本地30m K缺失，跳过: {','.join(missing)}", file=sys.stderr)
+    if not quotes:
+        raise SelectionImportError("所有入选股票均无可上传的真实30m K")
+    return quotes
+
+
+def import_intraday_quote_history(
+    items: list[dict],
+    *,
+    payload_builder: Callable[..., dict] = market_data.build_selected_30m_sync_payload,
+    post: Callable[..., httpx.Response] = httpx.post,
+) -> int:
+    """Upload real 30-minute bars in API-safe batches after daily K succeeds."""
+    selection_url, token = _api_config()
+    quotes = _load_selected_intraday_history(items, payload_builder=payload_builder)
+    imported = 0
+    try:
+        for offset in range(0, len(quotes), 5000):
+            batch = quotes[offset:offset + 5000]
+            response = post(
+                _intraday_quote_import_url(selection_url),
+                headers={"X-Job-Token": token},
+                json={"quotes": batch},
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            count = payload.get("data", {}).get("count") if isinstance(payload, dict) else None
+            if not isinstance(count, int) or count != len(batch):
+                raise SelectionImportError("30m K导入接口响应数量与本地数据不一致")
+            imported += count
+    except httpx.HTTPStatusError as exc:
+        raise SelectionImportError(f"30m K导入接口返回 HTTP {exc.response.status_code}") from exc
+    except httpx.HTTPError as exc:
+        raise SelectionImportError(f"请求30m K导入接口失败: {type(exc).__name__}") from exc
+    except ValueError as exc:
+        raise SelectionImportError("30m K导入接口返回了无效 JSON") from exc
+    return imported
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="本地选股并导入 Railway")
     parser.add_argument("--trade-date", default=date.today().isoformat(), help="交易日 YYYY-MM-DD（默认今天）")
@@ -259,10 +373,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         selection_run = _import_selection_run(args.trade_date, replace_existing=args.replace_existing)
         quote_count = import_quote_history(selection_run.trade_date, selection_run.items)
+        intraday_quote_count = import_intraday_quote_history(selection_run.items)
     except (SelectionImportError, LocalSelectionDataError, ValueError) as exc:
         print(f"本地选股导入失败: {exc}", file=sys.stderr)
         return 1
-    print(f"本地选股与日K导入成功: trade_date={selection_run.trade_date}, selections={selection_run.count}, quotes={quote_count}")
+    print(
+        "本地选股与K线导入成功: "
+        f"trade_date={selection_run.trade_date}, selections={selection_run.count}, "
+        f"daily_quotes={quote_count}, intraday_30m_quotes={intraday_quote_count}"
+    )
     return 0
 
 

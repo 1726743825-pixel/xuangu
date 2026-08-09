@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -100,9 +101,10 @@ def test_main_success_log_uses_actual_trade_date(monkeypatch, capsys):
     monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
     monkeypatch.setattr(local_import, "_import_selection_run", lambda *_args, **_kwargs: local_import.SelectionImportRun(10, "2026-08-07", _items("")))
     monkeypatch.setattr(local_import, "import_quote_history", lambda *_: 120)
+    monkeypatch.setattr(local_import, "import_intraday_quote_history", lambda *_: 240)
 
     assert local_import.main(["--trade-date", "2026-08-07", "--env-file", "unused.env"]) == 0
-    assert "trade_date=2026-08-07, selections=10, quotes=120" in capsys.readouterr().out
+    assert "trade_date=2026-08-07, selections=10, daily_quotes=120, intraday_30m_quotes=240" in capsys.readouterr().out
 
 
 def test_main_passes_replace_flag_only_when_requested(monkeypatch):
@@ -115,6 +117,7 @@ def test_main_passes_replace_flag_only_when_requested(monkeypatch):
 
     monkeypatch.setattr(local_import, "_import_selection_run", selection_run)
     monkeypatch.setattr(local_import, "import_quote_history", lambda *_: 1)
+    monkeypatch.setattr(local_import, "import_intraday_quote_history", lambda *_: 1)
     assert local_import.main(["--trade-date", "2026-08-07", "--replace-existing", "--env-file", "unused.env"]) == 0
     assert captured["replace_existing"] is True
 
@@ -215,3 +218,101 @@ def test_quote_import_failure_does_not_leak_token(monkeypatch):
     with pytest.raises(local_import.SelectionImportError, match="日K导入接口返回 HTTP 503") as error:
         local_import.import_quote_history("2026-08-07", _items(""), history_loader=_quote_rows, post=post)
     assert "secret-not-to-print" not in str(error.value)
+
+
+def _intraday_payload(*_, **__):
+    return {"interval": "30m", "bars": [
+        {
+            "code": "600519", "name": "贵州茅台", "interval": "30m",
+            "datetime": "2026-08-07T10:00:00+08:00", "open": 1500,
+            "high": 1520, "low": 1490, "close": 1510, "volume": 1000,
+            "amount": None, "amount_estimated": True,
+        },
+        {
+            "code": "600519", "name": "贵州茅台", "interval": "30m",
+            "datetime": "2026-08-07T10:30:00+08:00", "open": 1510,
+            "high": 1530, "low": 1500, "close": 1525, "volume": 1200,
+            "amount": None, "amount_estimated": True,
+        },
+    ]}
+
+
+def test_import_intraday_quote_history_posts_real_30m_payload(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
+    captured = {}
+
+    def post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response(2)
+
+    assert local_import.import_intraday_quote_history(_items(""), payload_builder=_intraday_payload, post=post) == 2
+    assert captured["url"] == "https://example.test/api/quotes/intraday/import"
+    assert captured["json"] == {"quotes": [
+        {
+            "stock_code": "600519", "stock_name": "贵州茅台", "interval": "30m",
+            "trade_datetime": "2026-08-07T10:00:00+08:00", "open": 1500.0,
+            "high": 1520.0, "low": 1490.0, "close": 1510.0, "volume": 1000.0,
+            "amount": None, "amount_estimated": True,
+        },
+        {
+            "stock_code": "600519", "stock_name": "贵州茅台", "interval": "30m",
+            "trade_datetime": "2026-08-07T10:30:00+08:00", "open": 1510.0,
+            "high": 1530.0, "low": 1500.0, "close": 1525.0, "volume": 1200.0,
+            "amount": None, "amount_estimated": True,
+        },
+    ]}
+    assert "secret-not-to-print" not in str(captured["json"])
+
+
+def test_import_intraday_quote_history_rejects_empty_real_bars(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret")
+    with pytest.raises(local_import.SelectionImportError, match="所有入选股票.*真实30m K"):
+        local_import.import_intraday_quote_history(
+            _items(""), payload_builder=lambda *_args, **_kwargs: {"interval": "30m", "bars": []},
+        )
+
+
+def test_intraday_import_failure_does_not_leak_token(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
+    request = httpx.Request("POST", "https://example.test/api/quotes/intraday/import")
+    response = httpx.Response(503, request=request)
+
+    def post(*_args, **_kwargs):
+        raise httpx.HTTPStatusError("unavailable", request=request, response=response)
+
+    with pytest.raises(local_import.SelectionImportError, match="30m K导入接口返回 HTTP 503") as error:
+        local_import.import_intraday_quote_history(_items(""), payload_builder=_intraday_payload, post=post)
+    assert "secret-not-to-print" not in str(error.value)
+
+
+def test_intraday_import_splits_requests_at_api_limit(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret")
+    items = [
+        {"code": f"{600100 + index:06d}", "name": f"股票{index}", "trade_date": "2026-08-07"}
+        for index in range(11)
+    ]
+    base = datetime(2026, 7, 1, 9, 30, tzinfo=timezone(timedelta(hours=8)))
+    bars = [
+        {
+            "code": item["code"], "interval": "30m",
+            "datetime": (base + timedelta(minutes=30 * offset)).isoformat(),
+            "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 100,
+            "amount": None, "amount_estimated": True,
+        }
+        for item in items for offset in range(480)
+    ]
+    batch_sizes = []
+
+    def post(_url, **kwargs):
+        batch_sizes.append(len(kwargs["json"]["quotes"]))
+        return _Response(batch_sizes[-1])
+
+    assert local_import.import_intraday_quote_history(
+        items, payload_builder=lambda *_args, **_kwargs: {"interval": "30m", "bars": bars}, post=post,
+    ) == 5280
+    assert batch_sizes == [5000, 280]
