@@ -17,7 +17,7 @@ def test_health():
 
 def _market_snapshot_payload(
     *, as_of: str = "2026-08-08T14:00:00+08:00", source: str = "akshare-sina",
-    index_price: float = 3000.0, stock_price: float = 20.0,
+    index_price: float = 3000.0, stock_price: float = 20.0, stock_code: str = "300970",
 ):
     definitions = [
         ("上证指数", "000001.SH"), ("深证成指", "399001.SZ"),
@@ -26,12 +26,12 @@ def _market_snapshot_payload(
     ]
     return {
         "indices": [
-            {"name": name, "code": code, "price": index_price + index,
+            {"name": name, "code": code, "available": True, "price": index_price + index,
              "change_pct": 0.1 + index, "observed_at": as_of, "source": source}
             for index, (name, code) in enumerate(definitions)
         ],
         "stocks": [{
-            "code": "300970", "name": "当前价测试", "price": stock_price,
+            "code": stock_code, "name": "当前价测试", "price": stock_price,
             "change_pct": 2.5, "observed_at": as_of, "source": source,
         }],
     }
@@ -62,6 +62,33 @@ def test_market_snapshot_import_requires_token_and_strict_akshare_contract(monke
         assert client.post("/api/market/snapshots/import", json=invalid_indices, headers=headers).status_code == 422
         invalid_price = _market_snapshot_payload(index_price=0)
         assert client.post("/api/market/snapshots/import", json=invalid_price, headers=headers).status_code == 422
+        missing_available_value = _market_snapshot_payload()
+        missing_available_value["indices"][0]["price"] = None
+        assert client.post(
+            "/api/market/snapshots/import", json=missing_available_value, headers=headers
+        ).status_code == 422
+
+
+def test_unavailable_north_index_package_succeeds_without_overwriting_latest(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    with TestClient(app) as client:
+        initial = _market_snapshot_payload(
+            as_of="2026-08-08T12:10:00+08:00", stock_code="300971"
+        )
+        assert client.post("/api/market/snapshots/import", json=initial, headers=headers).status_code == 200
+        unavailable = _market_snapshot_payload(
+            as_of="2026-08-08T12:20:00+08:00", index_price=5000, stock_code="300971"
+        )
+        north = unavailable["indices"][3]
+        north.update(available=False, price=None, change_pct=None, observed_at=None)
+        response = client.post("/api/market/snapshots/import", json=unavailable, headers=headers)
+        items = client.get("/api/market/indices").json()["data"]["items"]
+    assert response.status_code == 200
+    assert response.json()["data"]["indices"] == 4
+    stored_north = next(item for item in items if item["code"] == "899050.BJ")
+    assert stored_north["price"] == 3003.0
+    assert stored_north["as_of"] == "2026-08-08T12:10:00+08:00"
 
 
 def test_selection_fixed_price_and_current_snapshot_are_not_mixed_and_stale_is_ignored(monkeypatch):
@@ -371,6 +398,7 @@ def _quote_import_payload(**overrides):
         "quotes": [{
             "stock_code": "301080", "stock_name": "易明医药", "trade_date": "2026-08-07",
             "open": 10.1, "high": 11.5, "low": 9.8, "close": 11.2, "volume": 123456,
+            "amount": 1358024, "source": "akshare-eastmoney",
         }],
     }
     payload.update(overrides)
@@ -393,6 +421,7 @@ def test_quote_import_validates_input(monkeypatch):
         {"stock_code": "301080", "stock_name": "测试", "trade_date": "2026-08-07", "open": 1, "high": 1, "low": 2, "close": 1, "volume": 1},
         {"stock_code": "301080", "stock_name": "测试", "trade_date": "2026-08-07", "open": 1, "high": 2, "low": 1, "close": "NaN", "volume": 1},
         {"stock_code": "301080", "stock_name": "截图异常", "trade_date": "2026-08-07", "open": 10, "high": 10.2, "low": 9.8, "close": 10.5, "volume": 1},
+        {"stock_code": "301080", "stock_name": "来源异常", "trade_date": "2026-08-07", "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 1, "source": "tencent"},
     ]
     with TestClient(app) as client:
         assert client.post("/api/quotes/import", json={"quotes": []}, headers=headers).status_code == 422
@@ -414,11 +443,18 @@ def test_quote_import_persists_echarts_kline_and_overwrites_duplicate(monkeypatc
         replacement = _quote_import_payload(quotes=[{
             "stock_code": "301080", "stock_name": "易明医药", "trade_date": "2026-08-07",
             "open": 11.0, "high": 12.0, "low": 10.5, "close": 11.8, "volume": 234567,
+            "amount": 2767890, "source": "akshare-eastmoney",
         }])
         assert client.post("/api/quotes/import", json=replacement, headers=headers).status_code == 200
         kline = client.get("/api/stock/301080/kline?period=daily")
+        with db.SessionLocal() as session:
+            persisted = session.query(DailyQuote).filter_by(
+                stock_code="301080", trade_date=date(2026, 8, 7)
+            ).one()
+            persisted_contract = (float(persisted.amount), persisted.source)
     assert kline.status_code == 200
     assert kline.json()["data"] == [["2026-08-07", 11.0, 11.8, 10.5, 12.0, 234567.0]]
+    assert persisted_contract == (2767890.0, "akshare-eastmoney")
 
 
 def _intraday_import_payload(**overrides):
@@ -428,6 +464,7 @@ def _intraday_import_payload(**overrides):
             "datetime": "2026-08-07T09:30:00+08:00",
             "open": 10.1, "high": 10.8, "low": 10.0, "close": 10.5,
             "volume": 123456, "amount": None, "estimated": True,
+            "source": "akshare-sina",
         }],
     }
     payload.update(overrides)
@@ -449,6 +486,7 @@ def test_intraday_quote_import_validates_contract_and_unknown_stock_name(monkeyp
         {**_intraday_import_payload()["quotes"][0], "code": "30109"},
         {**_intraday_import_payload()["quotes"][0], "high": 9, "low": 10},
         {**_intraday_import_payload()["quotes"][0], "high": 10.2, "close": 10.5},
+        {**_intraday_import_payload()["quotes"][0], "source": "sina"},
         {key: value for key, value in _intraday_import_payload()["quotes"][0].items() if key != "estimated"},
     ]
     with TestClient(app) as client:
@@ -467,12 +505,18 @@ def test_intraday_quote_import_upserts_normalises_timezone_and_keeps_daily_kline
         "stock_code": "301090", "interval": "30m", "datetime": "2026-08-07T01:30:00Z",
         "open": 10.2, "high": 11.0, "low": 10.1, "close": 10.9,
         "volume": 234567, "amount": 2500000, "amount_estimated": False,
+        "source": "akshare-sina",
     }])
     with TestClient(app) as client:
         assert client.post("/api/quotes/intraday/import", json=first, headers=headers).status_code == 200
         second = client.post("/api/quotes/intraday/import", json=replacement, headers=headers)
         intraday = client.get("/api/stock/301090/kline?period=30m")
         daily = client.get("/api/stock/301090/kline?period=daily")
+        with db.SessionLocal() as session:
+            persisted = session.query(IntradayQuote).filter_by(
+                stock_code="301090", interval="30m"
+            ).one()
+            persisted_source = persisted.source
     assert second.status_code == 200
     assert second.json()["data"] == {
         "count": 1,
@@ -485,6 +529,7 @@ def test_intraday_quote_import_upserts_normalises_timezone_and_keeps_daily_kline
         "message": "",
     }
     assert daily.json() == {"code": 0, "data": [], "message": ""}
+    assert persisted_source == "akshare-sina"
 
 
 def test_intraday_kline_returns_empty_without_persisted_intraday_bars():

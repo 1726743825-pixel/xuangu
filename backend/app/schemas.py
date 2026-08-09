@@ -232,9 +232,12 @@ class MarketIndices(BaseModel):
 class MarketIndexSnapshotImportItem(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     code: str
-    price: float
-    change_pct: float
-    as_of: datetime = Field(validation_alias=AliasChoices("as_of", "observed_at"))
+    available: bool
+    price: float | None = None
+    change_pct: float | None = None
+    as_of: datetime | None = Field(
+        default=None, validation_alias=AliasChoices("as_of", "observed_at")
+    )
     source: str = Field(pattern=r"^akshare-[A-Za-z0-9._-]+$")
 
     @field_validator("code")
@@ -247,21 +250,23 @@ class MarketIndexSnapshotImportItem(BaseModel):
 
     @field_validator("price")
     @classmethod
-    def price_must_be_finite_and_positive(cls, value: float) -> float:
-        if not isfinite(value) or value <= 0:
+    def price_must_be_finite_and_positive(cls, value: float | None) -> float | None:
+        if value is not None and (not isfinite(value) or value <= 0):
             raise ValueError("snapshot price must be finite and positive")
         return value
 
     @field_validator("change_pct")
     @classmethod
-    def change_pct_must_be_finite(cls, value: float) -> float:
-        if not isfinite(value):
+    def change_pct_must_be_finite(cls, value: float | None) -> float | None:
+        if value is not None and not isfinite(value):
             raise ValueError("snapshot change_pct must be finite")
         return value
 
     @field_validator("as_of")
     @classmethod
-    def normalise_as_of(cls, value: datetime) -> datetime:
+    def normalise_as_of(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         shanghai = ZoneInfo("Asia/Shanghai")
         return value.replace(tzinfo=shanghai) if value.tzinfo is None else value.astimezone(shanghai)
 
@@ -269,6 +274,10 @@ class MarketIndexSnapshotImportItem(BaseModel):
     def name_must_match_fixed_index(self) -> "MarketIndexSnapshotImportItem":
         if self.name != _MARKET_INDEX_NAMES[self.code]:
             raise ValueError("market index name does not match code")
+        if self.available and any(
+            value is None for value in (self.price, self.change_pct, self.as_of)
+        ):
+            raise ValueError("available market index requires price, change_pct and as_of")
         return self
 
 
@@ -348,6 +357,8 @@ class QuoteImportItem(BaseModel):
     low: float
     close: float
     volume: float
+    amount: float | None = None
+    source: str | None = Field(default=None, pattern=r"^akshare-[A-Za-z0-9._-]+$")
 
     @field_validator("open", "high", "low", "close", "volume")
     @classmethod
@@ -363,6 +374,13 @@ class QuoteImportItem(BaseModel):
         if self.high < max(self.open, self.close, self.low) or self.low > min(self.open, self.close, self.high):
             raise ValueError("OHLC invariant requires low <= open/close <= high")
         return self
+
+    @field_validator("amount")
+    @classmethod
+    def amount_must_be_finite_and_non_negative(cls, value: float | None) -> float | None:
+        if value is not None and (not isfinite(value) or value < 0):
+            raise ValueError("amount must be finite and non-negative")
+        return value
 
 
 class QuoteImportRequest(BaseModel):
@@ -391,6 +409,7 @@ class IntradayQuoteImportItem(BaseModel):
     volume: float
     amount: float | None = None
     amount_estimated: bool = Field(validation_alias=AliasChoices("amount_estimated", "estimated"))
+    source: str | None = Field(default=None, pattern=r"^akshare-[A-Za-z0-9._-]+$")
 
     @field_validator("trade_datetime")
     @classmethod

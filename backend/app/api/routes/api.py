@@ -268,6 +268,7 @@ def import_market_snapshots(
     _: None = Depends(_require_job_token),
 ) -> APIResponse[MarketSnapshotImportResult]:
     """Import AKShare snapshots prepared on the domestic host; never fetch live data here."""
+    available_indices = [item for item in request.indices if item.available]
     db.save_market_snapshots([
         {
             "code": item.code,
@@ -277,7 +278,7 @@ def import_market_snapshots(
             "as_of": item.as_of,
             "source": item.source,
         }
-        for item in request.indices
+        for item in available_indices
     ])
     stock_rows = []
     for item in request.stocks:
@@ -294,7 +295,7 @@ def import_market_snapshots(
         })
     db.save_stock_quote_snapshots(stock_rows)
     return APIResponse(data=MarketSnapshotImportResult(
-        indices=len(request.indices), stocks=len(request.stocks)
+        indices=len(available_indices), stocks=len(request.stocks)
     ))
 
 
@@ -315,6 +316,8 @@ def import_quotes(
             "low": item.low,
             "close": item.close,
             "volume": item.volume,
+            "amount": item.amount,
+            "source": item.source,
         }
         for item in request.quotes
     ])
@@ -346,6 +349,7 @@ def import_intraday_quotes(
             "open": item.open, "high": item.high, "low": item.low, "close": item.close,
             "volume": item.volume, "amount": item.amount,
             "amount_estimated": item.amount_estimated,
+            "source": item.source,
         })
     db.save_intraday_quotes(rows)
     timestamps = [item.trade_datetime for item in request.quotes]
