@@ -8,7 +8,16 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import DailyQuote, IntradayQuote, JobRun, SelectionResult, Stock, TradeCalendar
+from app.models import (
+    DailyQuote,
+    IntradayQuote,
+    JobRun,
+    MarketSnapshot,
+    SelectionResult,
+    Stock,
+    StockQuoteSnapshot,
+    TradeCalendar,
+)
 
 from .crud import CRUDBase
 
@@ -123,6 +132,12 @@ class SelectionResultDAO(CRUDBase[SelectionResult]):
         super().__init__(SelectionResult)
 
     def upsert(self, session: Session, *, values: dict[str, Any], commit: bool = True) -> SelectionResult:
+        selection_price = values.get("selection_price")
+        selection_price_date = values.get("selection_price_date")
+        if (selection_price is None) != (selection_price_date is None):
+            raise ValueError("selection_price and selection_price_date must be set together")
+        if selection_price_date is not None and selection_price_date != values["trade_date"]:
+            raise ValueError("selection_price_date must equal trade_date")
         statement = sqlite_insert(SelectionResult).values(**values)
         statement = statement.on_conflict_do_update(
             index_elements=[
@@ -133,6 +148,8 @@ class SelectionResultDAO(CRUDBase[SelectionResult]):
             set_={
                 "signals": values["signals"],
                 "score": values.get("score"),
+                "selection_price": values.get("selection_price"),
+                "selection_price_date": values.get("selection_price_date"),
                 "updated_at": func.current_timestamp(),
             },
         )
@@ -181,6 +198,67 @@ class SelectionResultDAO(CRUDBase[SelectionResult]):
         ).all()
 
 
+class StockQuoteSnapshotDAO(CRUDBase[StockQuoteSnapshot]):
+    def __init__(self) -> None:
+        super().__init__(StockQuoteSnapshot)
+
+    def upsert(
+        self, session: Session, *, values: dict[str, Any], commit: bool = True
+    ) -> StockQuoteSnapshot:
+        statement = sqlite_insert(StockQuoteSnapshot).values(**values)
+        statement = statement.on_conflict_do_update(
+            index_elements=[StockQuoteSnapshot.stock_code],
+            set_={
+                "price": values["price"],
+                "change_pct": values.get("change_pct"),
+                "as_of": values["as_of"],
+                "source": values["source"],
+                "updated_at": func.current_timestamp(),
+            },
+            where=StockQuoteSnapshot.as_of <= values["as_of"],
+        )
+        session.execute(statement)
+        if commit:
+            session.commit()
+        return session.get_one(StockQuoteSnapshot, values["stock_code"])
+
+    def latest(self, session: Session, stock_code: str) -> StockQuoteSnapshot | None:
+        return session.get(StockQuoteSnapshot, stock_code)
+
+
+class MarketSnapshotDAO(CRUDBase[MarketSnapshot]):
+    def __init__(self) -> None:
+        super().__init__(MarketSnapshot)
+
+    def upsert(
+        self, session: Session, *, values: dict[str, Any], commit: bool = True
+    ) -> MarketSnapshot:
+        statement = sqlite_insert(MarketSnapshot).values(**values)
+        statement = statement.on_conflict_do_update(
+            index_elements=[MarketSnapshot.code],
+            set_={
+                "name": values["name"],
+                "level": values["level"],
+                "change_pct": values.get("change_pct"),
+                "as_of": values["as_of"],
+                "source": values["source"],
+                "updated_at": func.current_timestamp(),
+            },
+            where=MarketSnapshot.as_of <= values["as_of"],
+        )
+        session.execute(statement)
+        if commit:
+            session.commit()
+        return session.get_one(MarketSnapshot, values["code"])
+
+    def list_latest(
+        self, session: Session, codes: Sequence[str] | None = None
+    ) -> Sequence[MarketSnapshot]:
+        statement = select(MarketSnapshot)
+        if codes is not None:
+            statement = statement.where(MarketSnapshot.code.in_(codes))
+        return session.scalars(statement.order_by(MarketSnapshot.code)).all()
+
 class TradeCalendarDAO(CRUDBase[TradeCalendar]):
     def __init__(self) -> None:
         super().__init__(TradeCalendar)
@@ -214,3 +292,5 @@ intraday_quotes = IntradayQuoteDAO()
 selection_results = SelectionResultDAO()
 trade_calendar = TradeCalendarDAO()
 job_runs = JobRunDAO()
+stock_quote_snapshots = StockQuoteSnapshotDAO()
+market_snapshots = MarketSnapshotDAO()

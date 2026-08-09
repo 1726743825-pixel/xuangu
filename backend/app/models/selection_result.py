@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Date, Float, ForeignKey, Index, JSON, String, UniqueConstraint
+from sqlalchemy import Date, Float, ForeignKey, Index, JSON, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
@@ -29,5 +30,7 @@ class SelectionResult(TimestampMixin, Base):
     strategy_name: Mapped[str] = mapped_column(String(128), nullable=False)
     signals: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     score: Mapped[float | None] = mapped_column(Float)
+    selection_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    selection_price_date: Mapped[date | None] = mapped_column(Date)
 
     stock: Mapped["Stock"] = relationship(back_populates="selection_results")

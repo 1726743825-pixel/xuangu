@@ -3,6 +3,8 @@ from .compat import (
     delete_trade_date_data,
     has_daily_quotes,
     latest_job,
+    read_latest_stock_snapshot,
+    read_market_snapshots,
     read_daily_bars,
     read_stock_universe,
     read_selection,
@@ -10,12 +12,23 @@ from .compat import (
     read_strategy_selections,
     replace_strategy_selections,
     save_job,
+    save_market_snapshots,
+    save_stock_quote_snapshots,
     save_daily_quotes,
     save_intraday_quotes,
     save_selections,
 )
 from .crud import CRUDBase
-from .dao import daily_quotes, intraday_quotes, job_runs, selection_results, stocks, trade_calendar
+from .dao import (
+    daily_quotes,
+    intraday_quotes,
+    job_runs,
+    market_snapshots,
+    selection_results,
+    stock_quote_snapshots,
+    stocks,
+    trade_calendar,
+)
 from .session import DATABASE_URL, SessionLocal, engine, get_db
 
 __all__ = [
@@ -30,6 +43,8 @@ __all__ = [
     "selection_results",
     "trade_calendar",
     "job_runs",
+    "stock_quote_snapshots",
+    "market_snapshots",
     "init_db",
     "delete_trade_date_data",
     "has_daily_quotes",
@@ -44,4 +59,8 @@ __all__ = [
     "read_strategy_selections",
     "save_job",
     "latest_job",
+    "save_stock_quote_snapshots",
+    "read_latest_stock_snapshot",
+    "save_market_snapshots",
+    "read_market_snapshots",
 ]

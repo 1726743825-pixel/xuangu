@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .daily_quote import DailyQuote
     from .intraday_quote import IntradayQuote
     from .selection_result import SelectionResult
+    from .stock_quote_snapshot import StockQuoteSnapshot
 
 
 class Stock(TimestampMixin, Base):
@@ -26,3 +27,6 @@ class Stock(TimestampMixin, Base):
     daily_quotes: Mapped[list["DailyQuote"]] = relationship(back_populates="stock")
     intraday_quotes: Mapped[list["IntradayQuote"]] = relationship(back_populates="stock")
     selection_results: Mapped[list["SelectionResult"]] = relationship(back_populates="stock")
+    quote_snapshot: Mapped["StockQuoteSnapshot | None"] = relationship(
+        back_populates="stock", uselist=False
+    )

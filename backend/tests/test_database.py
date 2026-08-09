@@ -8,8 +8,10 @@ from sqlalchemy.pool import StaticPool
 from app.db.dao import (
     DailyQuoteDAO,
     IntradayQuoteDAO,
+    MarketSnapshotDAO,
     SelectionResultDAO,
     StockDAO,
+    StockQuoteSnapshotDAO,
     TradeCalendarDAO,
 )
 from app.models import Base
@@ -31,6 +33,7 @@ def test_core_tables_have_timestamps_and_joint_indexes():
 
     for table_name in (
         "stocks", "daily_quotes", "intraday_quotes", "selection_results", "trade_calendar",
+        "stock_quote_snapshots", "market_snapshots",
     ):
         columns = {column["name"] for column in inspector.get_columns(table_name)}
         assert {"created_at", "updated_at"} <= columns
@@ -122,3 +125,58 @@ def test_table_daos_create_upsert_and_query():
         assert selection.signals["turnover_rate"] == 8.5
         assert selection.signals["board_count"] == 2
         assert calendar_dao.is_open(session, trade_date)
+
+
+def test_fixed_selection_price_and_latest_snapshots_are_idempotent():
+    engine = _engine()
+    stock_dao = StockDAO()
+    selection_dao = SelectionResultDAO()
+    stock_snapshot_dao = StockQuoteSnapshotDAO()
+    market_snapshot_dao = MarketSnapshotDAO()
+    trade_date = date(2026, 8, 8)
+    newest = datetime(2026, 8, 8, 15, 1)
+
+    with Session(engine) as session:
+        stock_dao.upsert(session, values={"code": "600000", "name": "浦发银行"})
+        base_selection = {
+            "stock_code": "600000", "trade_date": trade_date, "strategy_name": "固定价测试",
+            "signals": {"price": 10.2}, "score": 80,
+            "selection_price": Decimal("10.20"), "selection_price_date": trade_date,
+        }
+        selection_dao.upsert(session, values=base_selection)
+        selection_dao.upsert(
+            session,
+            values={**base_selection, "score": 82, "selection_price": Decimal("10.30")},
+        )
+        selection = selection_dao.latest_for_stock(session, "600000", trade_date)
+        assert selection is not None
+        assert selection.selection_price == Decimal("10.3000")
+        assert selection.selection_price_date == trade_date
+
+        stock_snapshot_dao.upsert(session, values={
+            "stock_code": "600000", "price": Decimal("11.00"),
+            "change_pct": Decimal("1.50"), "as_of": newest, "source": "akshare",
+        })
+        stock_snapshot_dao.upsert(session, values={
+            "stock_code": "600000", "price": Decimal("9.00"),
+            "change_pct": Decimal("-1.00"), "as_of": datetime(2026, 8, 8, 14, 59),
+            "source": "stale",
+        })
+        latest_stock = stock_snapshot_dao.latest(session, "600000")
+        assert latest_stock is not None
+        assert latest_stock.price == Decimal("11.0000")
+        assert latest_stock.source == "akshare"
+
+        market_snapshot_dao.upsert(session, values={
+            "code": "000001.SH", "name": "上证指数", "level": Decimal("3600.10"),
+            "change_pct": Decimal("0.50"), "as_of": newest, "source": "akshare",
+        })
+        market_snapshot_dao.upsert(session, values={
+            "code": "000001.SH", "name": "上证指数", "level": Decimal("3500.00"),
+            "change_pct": Decimal("-1.00"), "as_of": datetime(2026, 8, 8, 14, 59),
+            "source": "stale",
+        })
+        latest_market = market_snapshot_dao.list_latest(session, ["000001.SH"])
+        assert len(latest_market) == 1
+        assert latest_market[0].level == Decimal("3600.1000")
+        assert latest_market[0].source == "akshare"
