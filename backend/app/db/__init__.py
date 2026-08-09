@@ -13,7 +13,7 @@ from .compat import (
     save_selections,
 )
 from .crud import CRUDBase
-from .dao import daily_quotes, job_runs, selection_results, stocks, trade_calendar
+from .dao import daily_quotes, intraday_quotes, job_runs, selection_results, stocks, trade_calendar
 from .session import DATABASE_URL, SessionLocal, engine, get_db
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "CRUDBase",
     "stocks",
     "daily_quotes",
+    "intraday_quotes",
     "selection_results",
     "trade_calendar",
     "job_runs",

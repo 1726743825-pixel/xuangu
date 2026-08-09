@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import DailyQuote, JobRun, SelectionResult, Stock, TradeCalendar
+from app.models import DailyQuote, IntradayQuote, JobRun, SelectionResult, Stock, TradeCalendar
 
 from .crud import CRUDBase
 
@@ -60,6 +60,61 @@ class DailyQuoteDAO(CRUDBase[DailyQuote]):
             .options(joinedload(DailyQuote.stock))
             .where(DailyQuote.trade_date.between(start_date, end_date))
             .order_by(DailyQuote.stock_code, DailyQuote.trade_date)
+        ).all()
+
+
+class IntradayQuoteDAO(CRUDBase[IntradayQuote]):
+    def __init__(self) -> None:
+        super().__init__(IntradayQuote)
+
+    def get_by_stock_interval_datetime(
+        self, session: Session, stock_code: str, interval: str, trade_datetime: datetime
+    ) -> IntradayQuote | None:
+        return session.scalar(
+            select(IntradayQuote).where(
+                IntradayQuote.stock_code == stock_code,
+                IntradayQuote.interval == interval,
+                IntradayQuote.trade_datetime == trade_datetime,
+            )
+        )
+
+    def upsert(self, session: Session, *, values: dict[str, Any], commit: bool = True) -> IntradayQuote:
+        statement = sqlite_insert(IntradayQuote).values(**values)
+        mutable_fields = ("open", "high", "low", "close", "volume", "amount")
+        statement = statement.on_conflict_do_update(
+            index_elements=[
+                IntradayQuote.stock_code,
+                IntradayQuote.interval,
+                IntradayQuote.trade_datetime,
+            ],
+            set_={
+                **{field: values.get(field) for field in mutable_fields},
+                "updated_at": func.current_timestamp(),
+            },
+        )
+        session.execute(statement)
+        if commit:
+            session.commit()
+        return self.get_by_stock_interval_datetime(
+            session, values["stock_code"], values["interval"], values["trade_datetime"]
+        )  # type: ignore[return-value]
+
+    def list_between(
+        self,
+        session: Session,
+        stock_code: str,
+        interval: str,
+        start_datetime: datetime,
+        end_datetime: datetime,
+    ) -> Sequence[IntradayQuote]:
+        return session.scalars(
+            select(IntradayQuote)
+            .where(
+                IntradayQuote.stock_code == stock_code,
+                IntradayQuote.interval == interval,
+                IntradayQuote.trade_datetime.between(start_datetime, end_datetime),
+            )
+            .order_by(IntradayQuote.trade_datetime)
         ).all()
 
 
@@ -155,6 +210,7 @@ class JobRunDAO(CRUDBase[JobRun]):
 
 stocks = StockDAO()
 daily_quotes = DailyQuoteDAO()
+intraday_quotes = IntradayQuoteDAO()
 selection_results = SelectionResultDAO()
 trade_calendar = TradeCalendarDAO()
 job_runs = JobRunDAO()

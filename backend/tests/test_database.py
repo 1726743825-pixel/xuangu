@@ -1,11 +1,17 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app.db.dao import DailyQuoteDAO, SelectionResultDAO, StockDAO, TradeCalendarDAO
+from app.db.dao import (
+    DailyQuoteDAO,
+    IntradayQuoteDAO,
+    SelectionResultDAO,
+    StockDAO,
+    TradeCalendarDAO,
+)
 from app.models import Base
 
 
@@ -23,7 +29,9 @@ def test_core_tables_have_timestamps_and_joint_indexes():
     engine = _engine()
     inspector = inspect(engine)
 
-    for table_name in ("stocks", "daily_quotes", "selection_results", "trade_calendar"):
+    for table_name in (
+        "stocks", "daily_quotes", "intraday_quotes", "selection_results", "trade_calendar",
+    ):
         columns = {column["name"] for column in inspector.get_columns(table_name)}
         assert {"created_at", "updated_at"} <= columns
 
@@ -33,12 +41,16 @@ def test_core_tables_have_timestamps_and_joint_indexes():
     assert "ix_selection_results_stock_code_trade_date" in {
         index["name"] for index in inspector.get_indexes("selection_results")
     }
+    assert "ix_intraday_quotes_stock_interval_datetime" in {
+        index["name"] for index in inspector.get_indexes("intraday_quotes")
+    }
 
 
 def test_table_daos_create_upsert_and_query():
     engine = _engine()
     stock_dao = StockDAO()
     quote_dao = DailyQuoteDAO()
+    intraday_dao = IntradayQuoteDAO()
     selection_dao = SelectionResultDAO()
     calendar_dao = TradeCalendarDAO()
     trade_date = date(2026, 8, 8)
@@ -61,6 +73,21 @@ def test_table_daos_create_upsert_and_query():
                 "amount": Decimal("10300"),
             },
         )
+        bar_time = datetime(2026, 8, 7, 10, 0)
+        intraday_dao.upsert(
+            session,
+            values={
+                "stock_code": "600000",
+                "interval": "30m",
+                "trade_datetime": bar_time,
+                "open": Decimal("10.10"),
+                "high": Decimal("10.60"),
+                "low": Decimal("10.00"),
+                "close": Decimal("10.50"),
+                "volume": Decimal("500"),
+                "amount": Decimal("5250"),
+            },
+        )
         selection_dao.upsert(
             session,
             values={
@@ -74,6 +101,19 @@ def test_table_daos_create_upsert_and_query():
         calendar_dao.upsert(session, values={"trade_date": trade_date, "is_open": True})
 
         assert quote_dao.get_by_stock_date(session, "600000", trade_date).close == Decimal("10.5000")
+        intraday_dao.upsert(
+            session,
+            values={
+                "stock_code": "600000", "interval": "30m", "trade_datetime": bar_time,
+                "open": Decimal("10.10"), "high": Decimal("10.70"), "low": Decimal("10.00"),
+                "close": Decimal("10.60"), "volume": Decimal("600"), "amount": Decimal("6360"),
+            },
+        )
+        bars = intraday_dao.list_between(
+            session, "600000", "30m", datetime(2026, 8, 7, 9, 30), datetime(2026, 8, 7, 15, 0)
+        )
+        assert len(bars) == 1
+        assert bars[0].close == Decimal("10.6000")
         selection = selection_dao.latest_for_stock(session, "600000", trade_date)
         assert selection.score == 88.5
         assert selection.signals["turnover_rate"] == 8.5
