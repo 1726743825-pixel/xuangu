@@ -31,6 +31,11 @@ def _cleanup_url(selection_url: str) -> str:
     return importer._sibling_api_url(selection_url, "/api/data/trade-date")
 
 
+def _delete_with_json(url: str, **kwargs) -> httpx.Response:
+    """Send DELETE bodies through request(), which supports JSON in httpx 0.28."""
+    return httpx.request("DELETE", url, **kwargs)
+
+
 def _parse_report(report_path: str | Path, target_trade_date: str) -> list[dict]:
     """Strictly parse the report before any destructive network operation."""
     try:
@@ -49,7 +54,7 @@ def _parse_report(report_path: str | Path, target_trade_date: str) -> list[dict]
 def _purge_trade_date(
     delete_trade_date: str,
     *,
-    delete: Callable[..., httpx.Response] = httpx.delete,
+    delete: Callable[..., httpx.Response] = _delete_with_json,
 ) -> dict:
     """Delete one fully-confirmed date after the report has parsed successfully."""
     try:
@@ -90,7 +95,7 @@ def migrate_official_report(
     report_path: str | Path,
     target_trade_date: str,
     *,
-    delete: Callable[..., httpx.Response] = httpx.delete,
+    delete: Callable[..., httpx.Response] = _delete_with_json,
     post: Callable[..., httpx.Response] = httpx.post,
 ) -> importer.SelectionImportRun:
     """Parse → purge → import, preserving that order even on a weekend report."""

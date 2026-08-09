@@ -120,6 +120,33 @@ def test_migration_cleanup_failure_never_imports_or_leaks_token(monkeypatch):
     assert "secret-not-to-print" not in str(error.value)
 
 
+def test_cleanup_default_sender_uses_delete_request_with_exact_json_body(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
+    captured = {}
+
+    def request(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response({
+            "date": "2026-08-07", "selection_results_deleted": 0,
+            "daily_quotes_deleted": 0, "intraday_quotes_deleted": 0,
+        })
+
+    monkeypatch.setattr(migration.httpx, "request", request)
+    migration._purge_trade_date("2026-08-07")
+
+    assert captured["method"] == "DELETE"
+    assert captured["url"] == "https://example.test/api/data/trade-date"
+    assert captured["json"] == {
+        "date": "2026-08-07", "delete_selections": True, "delete_daily_quotes": True,
+        "delete_intraday_quotes": True, "confirm": True,
+    }
+    assert captured["timeout"] == 60.0
+    assert "secret-not-to-print" not in str(captured["json"])
+
+
 def test_migration_main_requires_explicit_purge_confirmation(monkeypatch, capsys):
     monkeypatch.setattr(migration.importer, "_load_env_file", lambda *_: pytest.fail("must not load env"))
     assert migration.main([
