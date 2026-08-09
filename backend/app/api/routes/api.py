@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime
+from math import isfinite
 import os
 import secrets
 from typing import Literal
@@ -16,12 +17,24 @@ from ... import db
 from ...data.market_data import latest_trading_date
 from ...integrations.market_adapter import get_quote
 from ...jobs import execute_quote_sync, execute_selection
-from ...models import DailyQuote, IntradayQuote, SelectionResult as SelectionResultModel, Stock
+from ...models import (
+    DailyQuote,
+    IntradayQuote,
+    MarketSnapshot,
+    SelectionResult as SelectionResultModel,
+    Stock,
+    StockQuoteSnapshot,
+)
 from ...schemas import (
     APIResponse,
     HealthData,
     IntradayQuoteImportRequest,
     IntradayQuoteImportResult,
+    MARKET_INDEX_DEFINITIONS,
+    MarketIndexItem,
+    MarketIndices,
+    MarketSnapshotImportRequest,
+    MarketSnapshotImportResult,
     Quote,
     QuoteImportRequest,
     QuoteImportResult,
@@ -43,13 +56,24 @@ from ...schemas import (
 router = APIRouter(prefix="/api", tags=["API"])
 
 
-def _selection_schema(row: SelectionResultModel) -> SelectionResult:
+def _shanghai_iso(value: datetime) -> str:
+    return value.replace(tzinfo=ZoneInfo("Asia/Shanghai")).isoformat()
+
+
+def _selection_schema(
+    row: SelectionResultModel, snapshot: StockQuoteSnapshot | None = None
+) -> SelectionResult:
     signals = row.signals or {}
+    selection_price = float(row.selection_price) if row.selection_price is not None else None
     return SelectionResult(
         code=row.stock_code,
         name=row.stock.name,
         trade_date=row.trade_date.isoformat(),
-        price=signals.get("price"),
+        price=selection_price,
+        selection_price=selection_price,
+        selection_price_date=row.selection_price_date,
+        current_price=float(snapshot.price) if snapshot is not None else None,
+        current_price_as_of=_shanghai_iso(snapshot.as_of) if snapshot is not None else None,
         change_pct=signals.get("change_pct"),
         score=row.score,
         strategy_name=row.strategy_name,
@@ -64,6 +88,26 @@ def _selection_schema(row: SelectionResultModel) -> SelectionResult:
 @router.get("/health", response_model=APIResponse[HealthData])
 def health() -> APIResponse[HealthData]:
     return APIResponse(data=HealthData(status="ok", service="xuangu-api"))
+
+
+@router.get("/market/indices", response_model=APIResponse[MarketIndices])
+def market_indices(session: Session = Depends(get_db)) -> APIResponse[MarketIndices]:
+    codes = [code for _, code in MARKET_INDEX_DEFINITIONS]
+    stored = {
+        row.code: row
+        for row in session.scalars(select(MarketSnapshot).where(MarketSnapshot.code.in_(codes))).all()
+    }
+    items = []
+    for name, code in MARKET_INDEX_DEFINITIONS:
+        row = stored.get(code)
+        items.append(MarketIndexItem(
+            name=name,
+            code=code,
+            price=float(row.level) if row is not None else None,
+            change_pct=float(row.change_pct) if row is not None and row.change_pct is not None else None,
+            as_of=_shanghai_iso(row.as_of) if row is not None else None,
+        ))
+    return APIResponse(data=MarketIndices(items=items))
 
 
 @router.get("/stocks", response_model=APIResponse[StockPage])
@@ -94,8 +138,18 @@ def list_selections(
     if strategy:
         statement = statement.where(SelectionResultModel.strategy_name == strategy)
     rows = session.scalars(statement.order_by(SelectionResultModel.score.desc())).unique().all()
+    codes = [row.stock_code for row in rows]
+    snapshots = {
+        row.stock_code: row
+        for row in session.scalars(
+            select(StockQuoteSnapshot).where(StockQuoteSnapshot.stock_code.in_(codes))
+        ).all()
+    } if codes else {}
     return APIResponse(data=SelectionPage(
-        date=target, strategy=strategy, items=[_selection_schema(row) for row in rows], count=len(rows)
+        date=target,
+        strategy=strategy,
+        items=[_selection_schema(row, snapshots.get(row.stock_code)) for row in rows],
+        count=len(rows),
     ))
 
 
@@ -194,6 +248,9 @@ def import_selections(
         {
             **item.model_dump(),
             "trade_date": target,
+            "selection_price_date": (
+                item.selection_price_date.isoformat() if item.selection_price_date else None
+            ),
         }
         for item in request.items
     ]
@@ -202,6 +259,43 @@ def import_selections(
     else:
         db.save_selections(results)
     return APIResponse(data=SelectionImportResult(date=request.trade_date, count=len(request.items)))
+
+
+@router.post("/market/snapshots/import", response_model=APIResponse[MarketSnapshotImportResult])
+def import_market_snapshots(
+    request: MarketSnapshotImportRequest,
+    session: Session = Depends(get_db),
+    _: None = Depends(_require_job_token),
+) -> APIResponse[MarketSnapshotImportResult]:
+    """Import AKShare snapshots prepared on the domestic host; never fetch live data here."""
+    db.save_market_snapshots([
+        {
+            "code": item.code,
+            "name": item.name,
+            "level": item.price,
+            "change_pct": item.change_pct,
+            "as_of": item.as_of,
+            "source": item.source,
+        }
+        for item in request.indices
+    ])
+    stock_rows = []
+    for item in request.stocks:
+        existing = session.get(Stock, item.code)
+        stock_rows.append({
+            "code": item.code,
+            "name": item.name,
+            "industry": existing.industry if existing is not None else None,
+            "is_st": existing.is_st if existing is not None else False,
+            "price": item.price,
+            "change_pct": item.change_pct,
+            "as_of": item.as_of,
+            "source": item.source,
+        })
+    db.save_stock_quote_snapshots(stock_rows)
+    return APIResponse(data=MarketSnapshotImportResult(
+        indices=len(request.indices), stocks=len(request.stocks)
+    ))
 
 
 @router.post("/quotes/import", response_model=APIResponse[QuoteImportResult])
@@ -300,6 +394,20 @@ def stock_detail(code: str, session: Session = Depends(get_db)) -> APIResponse[S
     ))
 
 
+def _valid_persisted_bar(row: DailyQuote | IntradayQuote) -> bool:
+    raw = (row.open, row.high, row.low, row.close, row.volume)
+    if any(value is None for value in raw):
+        return False
+    open_, high, low, close, volume = (float(value) for value in raw)
+    return (
+        all(isfinite(value) for value in (open_, high, low, close, volume))
+        and min(open_, high, low, close) > 0
+        and volume >= 0
+        and low <= open_ <= high
+        and low <= close <= high
+    )
+
+
 def _weekly_bars(rows: list[DailyQuote]) -> list[list[object]]:
     grouped: dict[tuple[int, int], list[DailyQuote]] = defaultdict(list)
     for row in rows:
@@ -329,12 +437,13 @@ def stock_kline(
             .where(IntradayQuote.stock_code == code, IntradayQuote.interval == "30m")
             .order_by(IntradayQuote.trade_datetime)
         ).all()
+        intraday_rows = [row for row in intraday_rows if _valid_persisted_bar(row)]
         shanghai = ZoneInfo("Asia/Shanghai")
         values = [
             [
                 row.trade_datetime.replace(tzinfo=shanghai).isoformat(),
-                float(row.open or 0), float(row.close or 0), float(row.low or 0),
-                float(row.high or 0), float(row.volume or 0),
+                float(row.open), float(row.close), float(row.low),
+                float(row.high), float(row.volume),
             ]
             for row in intraday_rows
         ]
@@ -342,9 +451,10 @@ def stock_kline(
     rows = session.scalars(
         select(DailyQuote).where(DailyQuote.stock_code == code).order_by(DailyQuote.trade_date).limit(500)
     ).all()
+    rows = [row for row in rows if _valid_persisted_bar(row)]
     if period == "weekly":
         values = _weekly_bars(rows)
     else:
-        values = [[row.trade_date.isoformat(), float(row.open or 0), float(row.close or 0),
-                   float(row.low or 0), float(row.high or 0), float(row.volume or 0)] for row in rows]
+        values = [[row.trade_date.isoformat(), float(row.open), float(row.close),
+                   float(row.low), float(row.high), float(row.volume)] for row in rows]
     return APIResponse(data=values)

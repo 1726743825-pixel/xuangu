@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from app import db
 from app.db import compat as db_compat
 from app.main import app
+from app.models import DailyQuote, IntradayQuote
 
 
 def test_health():
@@ -12,6 +13,87 @@ def test_health():
         response = client.get("/api/health")
         assert response.status_code == 200
         assert response.json()["data"]["status"] == "ok"
+
+
+def _market_snapshot_payload(
+    *, as_of: str = "2026-08-08T14:00:00+08:00", source: str = "akshare-sina",
+    index_price: float = 3000.0, stock_price: float = 20.0,
+):
+    definitions = [
+        ("上证指数", "000001.SH"), ("深证成指", "399001.SZ"),
+        ("创业板指", "399006.SZ"), ("北证50", "899050.BJ"),
+        ("科创50", "000688.SH"),
+    ]
+    return {
+        "indices": [
+            {"name": name, "code": code, "price": index_price + index,
+             "change_pct": 0.1 + index, "observed_at": as_of, "source": source}
+            for index, (name, code) in enumerate(definitions)
+        ],
+        "stocks": [{
+            "code": "300970", "name": "当前价测试", "price": stock_price,
+            "change_pct": 2.5, "observed_at": as_of, "source": source,
+        }],
+    }
+
+
+def test_market_indices_always_returns_fixed_five_in_order():
+    with TestClient(app) as client:
+        response = client.get("/api/market/indices")
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert [(item["name"], item["code"]) for item in items] == [
+        ("上证指数", "000001.SH"), ("深证成指", "399001.SZ"),
+        ("创业板指", "399006.SZ"), ("北证50", "899050.BJ"),
+        ("科创50", "000688.SH"),
+    ]
+    assert all(item["price"] is None and item["as_of"] is None for item in items)
+
+
+def test_market_snapshot_import_requires_token_and_strict_akshare_contract(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    with TestClient(app) as client:
+        assert client.post("/api/market/snapshots/import", json=_market_snapshot_payload()).status_code == 401
+        invalid_source = _market_snapshot_payload(source="AKShare/Sina")
+        assert client.post("/api/market/snapshots/import", json=invalid_source, headers=headers).status_code == 422
+        invalid_indices = _market_snapshot_payload()
+        invalid_indices["indices"][-1] = dict(invalid_indices["indices"][0])
+        assert client.post("/api/market/snapshots/import", json=invalid_indices, headers=headers).status_code == 422
+        invalid_price = _market_snapshot_payload(index_price=0)
+        assert client.post("/api/market/snapshots/import", json=invalid_price, headers=headers).status_code == 422
+
+
+def test_selection_fixed_price_and_current_snapshot_are_not_mixed_and_stale_is_ignored(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    report_date, price_date = "2032-01-04", "2032-01-02"
+    selection = _import_payload(trade_date=report_date, items=[{
+        "code": "300970", "name": "当前价测试", "score": 90,
+        "selection_price": 12.5, "price_date": price_date,
+        "change_pct": 1.25, "strategy_name": "超短线技术共振",
+    }])
+    with TestClient(app) as client:
+        assert client.post("/api/selections/import", json=selection, headers=headers).status_code == 200
+        newest = client.post(
+            "/api/market/snapshots/import", json=_market_snapshot_payload(), headers=headers
+        )
+        assert newest.status_code == 200
+        first = client.get(f"/api/selections?date={report_date}").json()["data"]["items"][0]
+        stale = _market_snapshot_payload(
+            as_of="2026-08-08T13:00:00+08:00", index_price=1000, stock_price=5,
+        )
+        assert client.post("/api/market/snapshots/import", json=stale, headers=headers).status_code == 200
+        second = client.get(f"/api/selections?date={report_date}").json()["data"]["items"][0]
+        indices = client.get("/api/market/indices").json()["data"]["items"]
+    assert first["price"] == first["selection_price"] == 12.5
+    assert first["selection_price_date"] == price_date
+    assert first["current_price"] == 20.0
+    assert first["current_price_as_of"] == "2026-08-08T14:00:00+08:00"
+    assert first["change_pct"] == 1.25
+    assert second["selection_price"] == 12.5 and second["current_price"] == 20.0
+    assert indices[0]["price"] == 3000.0
+    assert indices[0]["as_of"] == "2026-08-08T14:00:00+08:00"
 
 
 def test_list_stocks_has_api_envelope():
@@ -114,7 +196,8 @@ def test_selection_import_preserves_local_display_fields_and_js_aliases(monkeypa
     item = selections.json()["data"]["items"][0]
     assert item == {
         "code": "300701", "name": "工大高科", "trade_date": "2030-02-01",
-        "price": 18.65, "change_pct": 4.21, "score": 92.0,
+        "price": 18.65, "selection_price": 18.65, "selection_price_date": "2030-02-01",
+        "current_price": None, "current_price_as_of": None, "change_pct": 4.21, "score": 92.0,
         "strategy_name": "超短线技术共振", "industry": "软件开发",
         "turnover_rate": 12.8, "board_count": 2,
         "reasons": ["量价共振"], "indicators": {},
@@ -309,6 +392,7 @@ def test_quote_import_validates_input(monkeypatch):
         {"stock_code": "301080", "stock_name": "测试", "trade_date": "20260807", "open": 1, "high": 2, "low": 1, "close": 1, "volume": 1},
         {"stock_code": "301080", "stock_name": "测试", "trade_date": "2026-08-07", "open": 1, "high": 1, "low": 2, "close": 1, "volume": 1},
         {"stock_code": "301080", "stock_name": "测试", "trade_date": "2026-08-07", "open": 1, "high": 2, "low": 1, "close": "NaN", "volume": 1},
+        {"stock_code": "301080", "stock_name": "截图异常", "trade_date": "2026-08-07", "open": 10, "high": 10.2, "low": 9.8, "close": 10.5, "volume": 1},
     ]
     with TestClient(app) as client:
         assert client.post("/api/quotes/import", json={"quotes": []}, headers=headers).status_code == 422
@@ -364,6 +448,7 @@ def test_intraday_quote_import_validates_contract_and_unknown_stock_name(monkeyp
         {**_intraday_import_payload()["quotes"][0], "interval": "15m"},
         {**_intraday_import_payload()["quotes"][0], "code": "30109"},
         {**_intraday_import_payload()["quotes"][0], "high": 9, "low": 10},
+        {**_intraday_import_payload()["quotes"][0], "high": 10.2, "close": 10.5},
         {key: value for key, value in _intraday_import_payload()["quotes"][0].items() if key != "estimated"},
     ]
     with TestClient(app) as client:
@@ -409,6 +494,30 @@ def test_intraday_kline_returns_empty_without_persisted_intraday_bars():
     with TestClient(app) as client:
         response = client.get("/api/stock/301091/kline?period=30m")
     assert response.json() == {"code": 0, "data": [], "message": ""}
+
+
+def test_kline_outputs_filter_preexisting_rows_that_violate_ohlc_invariants():
+    code = "301092"
+    with TestClient(app) as client:
+        db.save_selections([{
+            "code": code, "name": "坏K线过滤", "trade_date": "2030-01-02", "score": 80,
+        }])
+        with db.SessionLocal.begin() as session:
+            session.add(DailyQuote(
+                stock_code=code, trade_date=date(2030, 1, 2),
+                open=10, high=9, low=8, close=10.5, volume=100,
+            ))
+            session.add(IntradayQuote(
+                stock_code=code, interval="30m", trade_datetime=datetime(2030, 1, 2, 9, 30),
+                open=10, high=9, low=8, close=10.5, volume=100,
+                amount=None, amount_estimated=False,
+            ))
+        daily = client.get(f"/api/stock/{code}/kline?period=daily")
+        weekly = client.get(f"/api/stock/{code}/kline?period=weekly")
+        intraday = client.get(f"/api/stock/{code}/kline?period=30m")
+    assert daily.json()["data"] == []
+    assert weekly.json()["data"] == []
+    assert intraday.json()["data"] == []
 
 
 def _cleanup_payload(date_value: str, **overrides):
