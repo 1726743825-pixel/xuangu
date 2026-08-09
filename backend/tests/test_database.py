@@ -75,6 +75,7 @@ def test_table_daos_create_upsert_and_query():
                 "close": Decimal("10.50"),
                 "volume": Decimal("1000"),
                 "amount": Decimal("10300"),
+                "source": "tencent",
             },
         )
         bar_time = datetime(2026, 8, 7, 10, 0)
@@ -91,6 +92,7 @@ def test_table_daos_create_upsert_and_query():
                 "volume": Decimal("500"),
                 "amount": Decimal("5250"),
                 "amount_estimated": False,
+                "source": "tencent",
             },
         )
         selection_dao.upsert(
@@ -106,6 +108,7 @@ def test_table_daos_create_upsert_and_query():
         calendar_dao.upsert(session, values={"trade_date": trade_date, "is_open": True})
 
         assert quote_dao.get_by_stock_date(session, "600000", trade_date).close == Decimal("10.5000")
+        assert quote_dao.get_by_stock_date(session, "600000", trade_date).source == "tencent"
         intraday_dao.upsert(
             session,
             values={
@@ -113,6 +116,7 @@ def test_table_daos_create_upsert_and_query():
                 "open": Decimal("10.10"), "high": Decimal("10.70"), "low": Decimal("10.00"),
                 "close": Decimal("10.60"), "volume": Decimal("600"), "amount": Decimal("6360"),
                 "amount_estimated": True,
+                "source": "akshare",
             },
         )
         bars = intraday_dao.list_between(
@@ -121,6 +125,7 @@ def test_table_daos_create_upsert_and_query():
         assert len(bars) == 1
         assert bars[0].close == Decimal("10.6000")
         assert bars[0].amount_estimated is True
+        assert bars[0].source == "akshare"
         selection = selection_dao.latest_for_stock(session, "600000", trade_date)
         assert selection.score == 88.5
         assert selection.signals["turnover_rate"] == 8.5

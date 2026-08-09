@@ -317,6 +317,7 @@ def save_daily_quotes(rows: list[dict[str, Any]]) -> int:
                     "open": values["open"], "high": values["high"], "low": values["low"],
                     "close": values["close"], "volume": values["volume"],
                     "amount": values["amount"],
+                    "source": row.get("source"),
                 },
                 commit=False,
             )
@@ -356,6 +357,7 @@ def save_intraday_quotes(rows: list[dict[str, Any]]) -> int:
                     "close": values["close"], "volume": values["volume"],
                     "amount": values["amount"],
                     "amount_estimated": row["amount_estimated"],
+                    "source": row.get("source"),
                 },
                 commit=False,
             )
@@ -470,6 +472,7 @@ def read_daily_bars(start_date: str, end_date: str) -> list[dict[str, Any]]:
                 "low": row.low,
                 "close": row.close,
                 "volume": row.volume,
+                "source": row.source,
             }
             for row in rows
         ]

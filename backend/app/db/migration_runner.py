@@ -43,6 +43,12 @@ def _stamp_unversioned_metadata_database(config: Config) -> None:
         and {"stock_quote_snapshots", "market_snapshots"} <= tables
     ):
         revision = "20260809_0004"
+        daily_columns = {column["name"] for column in inspector.get_columns("daily_quotes")}
+        intraday_columns = {
+            column["name"] for column in inspector.get_columns("intraday_quotes")
+        }
+        if "source" in daily_columns and "source" in intraday_columns:
+            revision = "20260809_0005"
     command.stamp(config, revision)
 
 

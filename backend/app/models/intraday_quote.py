@@ -46,5 +46,6 @@ class IntradayQuote(TimestampMixin, Base):
     volume: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
     amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
     amount_estimated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    source: Mapped[str | None] = mapped_column(String(64))
 
     stock: Mapped["Stock"] = relationship(back_populates="intraday_quotes")

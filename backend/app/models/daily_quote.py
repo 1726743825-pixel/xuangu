@@ -31,5 +31,6 @@ class DailyQuote(TimestampMixin, Base):
     close: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     volume: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
     amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    source: Mapped[str | None] = mapped_column(String(64))
 
     stock: Mapped["Stock"] = relationship(back_populates="daily_quotes")

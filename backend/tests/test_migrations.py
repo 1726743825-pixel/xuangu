@@ -33,6 +33,8 @@ def test_alembic_upgrade_creates_intraday_quotes_for_sqlite(tmp_path: Path) -> N
     assert {
         "stock_code", "interval", "trade_datetime", "open", "high", "low", "close", "volume", "amount", "amount_estimated",
     } <= {column["name"] for column in inspector.get_columns("intraday_quotes")}
+    assert "source" in {column["name"] for column in inspector.get_columns("intraday_quotes")}
+    assert "source" in {column["name"] for column in inspector.get_columns("daily_quotes")}
     assert {"selection_price", "selection_price_date"} <= {
         column["name"] for column in inspector.get_columns("selection_results")
     }
@@ -68,6 +70,16 @@ def test_snapshot_migration_preserves_existing_volume_rows(tmp_path: Path) -> No
             ),
             {"signals": '{"price":12.3}'},
         )
+        connection.execute(text(
+            "INSERT INTO daily_quotes "
+            "(stock_code,trade_date,open,high,low,close,volume,amount) VALUES "
+            "('600000','2026-08-08',10,11,9,10.5,100,1050)"
+        ))
+        connection.execute(text(
+            "INSERT INTO intraday_quotes "
+            "(stock_code,interval,trade_datetime,open,high,low,close,volume,amount,amount_estimated) "
+            "VALUES ('600000','30m','2026-08-08 10:00:00',10,11,9,10.5,50,525,0)"
+        ))
 
     subprocess.run(
         [*alembic_command, "head"], cwd=backend_root, env=environment, check=True,
@@ -82,6 +94,15 @@ def test_snapshot_migration_preserves_existing_volume_rows(tmp_path: Path) -> No
     assert row.strategy_name == "迁移测试"
     assert row.selection_price is None
     assert row.selection_price_date is None
+    with engine.connect() as connection:
+        daily = connection.execute(text(
+            "SELECT stock_code, source FROM daily_quotes WHERE stock_code='600000'"
+        )).one()
+        intraday = connection.execute(text(
+            "SELECT stock_code, source FROM intraday_quotes WHERE stock_code='600000'"
+        )).one()
+    assert daily.stock_code == "600000" and daily.source is None
+    assert intraday.stock_code == "600000" and intraday.source is None
 
 
 def test_startup_adopts_unversioned_metadata_volume(tmp_path: Path) -> None:
@@ -107,4 +128,4 @@ def test_startup_adopts_unversioned_metadata_volume(tmp_path: Path) -> None:
     assert {"stock_quote_snapshots", "market_snapshots"} <= set(inspector.get_table_names())
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT name FROM stocks WHERE code='600001'")) == "无版本卷"
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260809_0004"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260809_0005"
