@@ -153,6 +153,8 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 官方报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果；日 K 同步仍只服务详情页和收益计算，不参与候选股计算。
 
+本机数据层还提供 `build_selected_30m_sync_payload(items)`，供后续 30 分钟 K 线导入接口使用：它只读取官方报告已经入选的代码，腾讯 `mkline` 每只最多保留 480 根（约 60 个交易日），价格为原始分钟价、`adjustment="none"`，周末报告不会产生 bar。腾讯接口没有可验证的逐根成交额，因此 payload 固定返回 `amount: null`、`amount_estimated: true`；前端若需要成交额，仅可用 `close * volume` 作**显示估算**，不得作为真实成交额或策略输入。
+
 ### Render / Railway 后端
 
 Render 可直接导入根目录 `render.yaml`。Blueprint 使用免费 Web Service、Dockerfile 最终 `backend` 阶段和 `/api/health` 健康检查。创建后设置 `CORS_ORIGINS` 为 Vercel 域名，并把 Render 生成的 `JOB_API_TOKEN` 同步到 GitHub Actions。Render 免费实例不提供持久磁盘，因此配置中的 `/tmp/xuangu.db` 会在重建或休眠恢复后丢失；免费方案适合演示，需长期保留结果时请选择持久磁盘或外部数据库。

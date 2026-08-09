@@ -46,6 +46,7 @@ EASTMONEY_LIST_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 EASTMONEY_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
 TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+TENCENT_MINUTE_KLINE_URL = "https://ifzq.gtimg.cn/appstock/app/kline/mkline"
 BAIDU_KLINE_URL = "https://finance.pae.baidu.com/selfselect/getstockquotation"
 SINA_KLINE_URL = "https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData"
 SINA_QFQ_URL = "https://finance.sina.com.cn/realstock/company/{symbol}/qfq.js"
@@ -1229,6 +1230,111 @@ def _get_eastmoney_kline(code: str, period: str, klt: int, limit: int = 1000) ->
     return output
 
 
+def _parse_tencent_jsonp(payload: str) -> dict[str, Any]:
+    """Decode Tencent's ``variable={...};`` response without trusting the name."""
+    try:
+        encoded = payload.split("=", 1)[1] if "=" in payload else payload
+        decoded = json.loads(encoded.strip().rstrip(";"))
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise MarketDataError("invalid Tencent minute K-line payload") from exc
+    if not isinstance(decoded, dict):
+        raise MarketDataError("Tencent minute K-line payload root is not an object")
+    return decoded
+
+
+def fetch_tencent_30m_bars(stock_code: str, limit: int = 480) -> list[dict[str, Any]]:
+    """Fetch up to 480 real Tencent 30-minute bars for one A-share code.
+
+    Tencent's ``mkline`` endpoint returns original intraday prices, with volume
+    in lots.  This normalises volume to shares (``lots * 100``).  Its final two
+    response columns are undocumented; they are deliberately ignored.  Tencent
+    supplies no verifiable bar-level amount here, so ``amount`` remains null and
+    ``amount_estimated`` explicitly records that a UI may estimate it only for
+    display as ``close * volume``.
+    """
+    code = _normalise_code(stock_code)
+    capped_limit = max(1, min(int(limit), 480))
+    symbol = _tencent_symbol(code)
+    payload = _parse_tencent_jsonp(
+        _request_text(
+            f"{TENCENT_MINUTE_KLINE_URL}?param={symbol},m30,,{capped_limit}&_var=xuangu_m30",
+            headers={"Referer": "https://gu.qq.com/"},
+        )
+    )
+    block = ((payload.get("data") or {}).get(symbol) or {})
+    rows = block.get("m30") or []
+    if not isinstance(rows, list):
+        raise MarketDataError(f"Tencent m30 payload has invalid rows for {code}")
+
+    output: list[dict[str, Any]] = []
+    for values in rows:
+        if not isinstance(values, list) or len(values) < 6:
+            continue
+        try:
+            moment = datetime.strptime(str(values[0]), "%Y%m%d%H%M")
+        except (TypeError, ValueError):
+            continue
+        open_price = _price(values[1])
+        close = _price(values[2])
+        high = _price(values[3])
+        low = _price(values[4])
+        volume_lots = _number(values[5])
+        if any(value is None for value in (open_price, close, high, low, volume_lots)):
+            continue
+        output.append(
+            {
+                "code": code,
+                "interval": "30m",
+                # Tencent timestamps identify the bar close in China Standard
+                # Time; the explicit offset avoids server-local ambiguity.
+                "datetime": moment.strftime("%Y-%m-%dT%H:%M:00+08:00"),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume_lots * 100,
+                "amount": None,
+                "amount_estimated": True,
+                "source": "tencent-m30",
+                "adjustment": "none",
+            }
+        )
+    return output[-capped_limit:]
+
+
+def build_selected_30m_sync_payload(
+    selected_items: list[dict[str, Any]], *, limit: int = 480
+) -> dict[str, Any]:
+    """Build, but do not submit, a 30-minute import payload for selected codes.
+
+    The caller passes the already-authoritative official-report items.  This
+    never discovers candidates or changes their scores/order.  A weekend report
+    is skipped because China's market has no 30-minute bars then; an empty
+    payload is intentionally safe for the later importer to ignore.
+    """
+    codes: list[str] = []
+    seen: set[str] = set()
+    for item in selected_items:
+        try:
+            trade_day = _parse_date(str(item.get("trade_date", "")))
+            code = _normalise_code(str(item.get("code", "")))
+        except ValueError:
+            continue
+        if trade_day.weekday() >= 5:
+            continue
+        if code not in seen:
+            seen.add(code)
+            codes.append(code)
+
+    bars: list[dict[str, Any]] = []
+    for code in codes:
+        try:
+            bars.extend(fetch_tencent_30m_bars(code, limit=limit))
+        except MarketDataError as exc:
+            logger.warning("Tencent 30m K-line failed for selected %s: %s", code, exc)
+    return {"interval": "30m", "bars": bars}
+
+
 def get_kline(stock_code: str, period: str) -> list[dict[str, Any]]:
     """Fetch a cleaned, forward-adjusted single-stock K-line series.
 
@@ -1315,6 +1421,7 @@ def fill_missing_selection_prices(
 
 
 __all__ = [
-    "MarketDataError", "fill_missing_selection_prices", "get_kline", "latest_trading_date", "sync_daily_quotes",
+    "MarketDataError", "build_selected_30m_sync_payload", "fetch_tencent_30m_bars",
+    "fill_missing_selection_prices", "get_kline", "latest_trading_date", "sync_daily_quotes",
     "sync_quote_history", "sync_stock_list",
 ]

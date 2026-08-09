@@ -449,6 +449,56 @@ def test_sync_quote_history_continues_after_one_stock_fails(monkeypatch):
     assert rows[0]["source"] == "sina-qfq"
 
 
+def test_fetch_tencent_30m_bars_normalises_prefix_fields_and_ignores_unknown_columns(monkeypatch):
+    monkeypatch.setattr(
+        market_data,
+        "_request_text",
+        lambda url, headers: (
+            'xuangu_m30={"code":0,"data":{"sh600519":{"m30":['
+            '["202608071000","10.10","10.20","10.30","10.00","123.45",{},"unknown"],'
+            '["not-a-time","10","10","10","10","1",{},"unknown"],'
+            '["202608071030","-","10.40","10.50","10.30","50",{},"unknown"]]}}};'
+        ),
+    )
+
+    rows = market_data.fetch_tencent_30m_bars("SH600519", limit=999)
+
+    assert rows == [{
+        "code": "600519", "interval": "30m", "datetime": "2026-08-07T10:00:00+08:00",
+        "open": 10.1, "high": 10.3, "low": 10.0, "close": 10.2, "volume": 12345.0,
+        "amount": None, "amount_estimated": True, "source": "tencent-m30", "adjustment": "none",
+    }]
+
+
+def test_fetch_tencent_30m_bars_returns_empty_for_empty_or_invalid_rows(monkeypatch):
+    monkeypatch.setattr(
+        market_data, "_request_text",
+        lambda url, headers: 'xuangu_m30={"data":{"sz300750":{"m30":[[],["bad"]]}}};',
+    )
+
+    assert market_data.fetch_tencent_30m_bars("300750") == []
+
+
+def test_selected_30m_payload_reads_only_weekday_selected_codes_and_preserves_limit(monkeypatch):
+    calls = []
+
+    def fetch(code, limit):
+        calls.append((code, limit))
+        return [{"code": code, "interval": "30m", "datetime": "2026-08-07T15:00:00+08:00"}]
+
+    monkeypatch.setattr(market_data, "fetch_tencent_30m_bars", fetch)
+    payload = market_data.build_selected_30m_sync_payload([
+        {"code": "600519", "trade_date": "2026-08-07", "score": 99},
+        {"code": "600519", "trade_date": "2026-08-07", "score": 88},
+        {"code": "300750", "trade_date": "2026-08-08", "score": 77},
+    ], limit=480)
+
+    assert calls == [("600519", 480)]
+    assert payload == {"interval": "30m", "bars": [
+        {"code": "600519", "interval": "30m", "datetime": "2026-08-07T15:00:00+08:00"}
+    ]}
+
+
 def test_get_kline_rejects_unknown_period():
     with pytest.raises(ValueError, match="unsupported"):
         market_data.get_kline("600519", "quarter")
