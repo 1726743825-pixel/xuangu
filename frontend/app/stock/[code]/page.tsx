@@ -4,18 +4,20 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { KlineChart, type BackendKlineRow } from "@/components/charts/KlineChart";
-import { SignalTag, type SignalTone } from "@/components/ui/SignalTag";
-import { apiUrl, fetcher, getLatestTradingDate } from "@/components/dashboard/api";
+import { apiUrl, fetcher } from "@/components/dashboard/api";
 
 type Period = "daily" | "weekly" | "monthly";
 
 interface LatestQuote { code: string; name: string; price: number | null; updated_at: string | null; }
 interface StockDetail { code: string; name: string; industry: string | null; list_date?: string | null; is_st?: boolean; latest_quote?: LatestQuote | null; }
-interface SelectionRecord { code: string; name: string; trade_date: string; price: number | null; change_pct: number | null; score: number | null; strategy_name: string; industry: string | null; reasons: string[]; }
-interface SelectionPage { items: SelectionRecord[]; }
+interface SelectionPerformancePoint { horizon: "1d" | "3d" | "5d" | "10d" | "25d" | "3m"; trade_date: string | null; return_pct: number | null; }
+interface SelectionPerformance { selection_date: string | null; items: SelectionPerformancePoint[]; }
 
 const PERIODS: Array<{ value: Period; label: string }> = [{ value: "daily", label: "日K" }, { value: "weekly", label: "周K" }, { value: "monthly", label: "月K" }];
-const signalTones: SignalTone[] = ["indigo", "emerald", "amber", "sky", "rose"];
+const PERFORMANCE_HORIZONS: Array<{ horizon: SelectionPerformancePoint["horizon"]; label: string }> = [
+  { horizon: "1d", label: "1 个交易日" }, { horizon: "3d", label: "3 个交易日" }, { horizon: "5d", label: "5 个交易日" },
+  { horizon: "10d", label: "10 个交易日" }, { horizon: "25d", label: "25 个交易日" }, { horizon: "3m", label: "3 个月" },
+];
 
 function normaliseRows(value: unknown): BackendKlineRow[] {
   if (!Array.isArray(value)) return [];
@@ -26,17 +28,10 @@ function normaliseRows(value: unknown): BackendKlineRow[] {
     return [[row[0], open, close, low, high, volume]];
   });
 }
-
 function monthlyBars(rows: BackendKlineRow[]): BackendKlineRow[] {
   const groups = new Map<string, BackendKlineRow[]>();
   rows.forEach((row) => { const key = row[0].slice(0, 7); groups.set(key, [...(groups.get(key) ?? []), row]); });
   return Array.from(groups.values()).map((bars) => { const first = bars[0]; const last = bars[bars.length - 1]; return [last[0], first[1], last[2], Math.min(...bars.map((bar) => bar[3])), Math.max(...bars.map((bar) => bar[4])), bars.reduce((sum, bar) => sum + bar[5], 0)]; });
-}
-
-function lastTradingDates(count: number) {
-  const dates: string[] = []; const cursor = new Date(`${getLatestTradingDate()}T00:00:00Z`);
-  while (dates.length < count) { if (cursor.getUTCDay() !== 0 && cursor.getUTCDay() !== 6) dates.push(cursor.toISOString().slice(0, 10)); cursor.setUTCDate(cursor.getUTCDate() - 1); }
-  return dates;
 }
 
 function pctChange(rows: BackendKlineRow[], price: number | null | undefined) {
@@ -51,14 +46,11 @@ export default function StockDetailPage({ params }: { params: { code: string } }
   const detail = useSWR<StockDetail>(apiUrl(`/api/stock/${encodeURIComponent(code)}/detail`), fetcher, { revalidateOnFocus: false });
   const dailyKline = useSWR<BackendKlineRow[]>(apiUrl(`/api/stock/${encodeURIComponent(code)}/kline?period=daily`), fetcher, { revalidateOnFocus: false });
   const weeklyKline = useSWR<BackendKlineRow[]>(period === "weekly" ? apiUrl(`/api/stock/${encodeURIComponent(code)}/kline?period=weekly`) : null, fetcher, { revalidateOnFocus: false });
-  const history = useSWR<SelectionRecord[]>(`stock-signal-history-${code}`, async () => {
-    const pages = await Promise.all(lastTradingDates(20).map((date) => fetcher<SelectionPage>(apiUrl(`/api/selections?date=${date}`)).catch(() => ({ items: [] }))));
-    return pages.flatMap((page) => page.items.filter((item) => item.code === code)).sort((a, b) => b.trade_date.localeCompare(a.trade_date));
-  }, { revalidateOnFocus: false });
+  const performance = useSWR<SelectionPerformance>(apiUrl(`/api/stock/${encodeURIComponent(code)}/selection-performance`), fetcher, { revalidateOnFocus: false });
   const dailyRows = useMemo(() => normaliseRows(dailyKline.data), [dailyKline.data]);
   const visibleRows = useMemo(() => period === "daily" ? dailyRows : period === "weekly" ? normaliseRows(weeklyKline.data) : monthlyBars(dailyRows), [period, dailyRows, weeklyKline.data]);
   const quote = detail.data?.latest_quote; const change = pctChange(dailyRows, quote?.price);
-  const reasons = history.data?.flatMap((record) => record.reasons ?? []).filter((reason, index, all) => all.indexOf(reason) === index).slice(0, 6) ?? [];
+  const performanceByHorizon = new Map(performance.data?.items.map((item) => [item.horizon, item]));
 
   return <main className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
     <div className="mx-auto w-full max-w-[1480px] px-4 py-7 sm:px-6 lg:px-8">
@@ -72,16 +64,14 @@ export default function StockDetailPage({ params }: { params: { code: string } }
       </header>
 
       <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-slate-950 dark:text-white">行情走势</h2><p className="mt-0.5 text-xs text-slate-400">K线 · 成交量</p></div><div className="inline-flex w-fit rounded-lg bg-slate-100 p-1 dark:bg-slate-800">{PERIODS.map((item) => <button key={item.value} type="button" onClick={() => setPeriod(item.value)} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${period === item.value ? "bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-300" : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"}`}>{item.label}</button>)}</div></div>
-        <div className="p-2 sm:p-4"><KlineChart data={visibleRows} loading={dailyKline.isLoading || (period === "weekly" && weeklyKline.isLoading)} /></div>
+        <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-slate-950 dark:text-white">行情走势</h2><p className="mt-0.5 text-xs text-slate-400">K线 · 成交额</p></div><div className="inline-flex w-fit rounded-lg bg-slate-100 p-1 dark:bg-slate-800">{PERIODS.map((item) => <button key={item.value} type="button" onClick={() => setPeriod(item.value)} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${period === item.value ? "bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-300" : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"}`}>{item.label}</button>)}</div></div>
+        <div className="p-2 sm:p-4"><KlineChart data={visibleRows} showForecast={period === "daily"} loading={dailyKline.isLoading || (period === "weekly" && weeklyKline.isLoading)} /></div>
       </section>
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,.8fr)_minmax(0,1.2fr)]">
-        <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"><h2 className="font-semibold text-slate-950 dark:text-white">基本面信息</h2><dl className="mt-4 divide-y divide-slate-100 dark:divide-slate-800"><Info label="所属行业" value={detail.data?.industry ?? "未分类"} /><Info label="上市日期" value={detail.data?.list_date ?? "—"} /><Info label="股票状态" value={detail.data?.is_st ? "ST" : "正常"} /><Info label="数据更新" value={quote?.updated_at ?? "—"} /><Info label="最近成交量" value={dailyRows.at(-1)?.[5]?.toLocaleString() ?? "—"} /></dl></section>
-        <section className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"><div className="flex items-center justify-between"><div><h2 className="font-semibold text-slate-950 dark:text-white">历史选股信号</h2><p className="mt-0.5 text-xs text-slate-400">最近 20 个交易日</p></div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">{history.data?.length ?? 0} 条</span></div>{reasons.length > 0 && <div className="mt-4 flex flex-wrap gap-1.5">{reasons.map((reason, index) => <SignalTag key={reason} label={reason} tone={signalTones[index % signalTones.length]} />)}</div>}<div className="mt-4 overflow-x-auto"><table className="w-full min-w-[500px] text-sm"><thead className="text-left text-xs uppercase tracking-wide text-slate-400"><tr><th className="pb-3 font-semibold">日期</th><th className="pb-3 font-semibold">策略</th><th className="pb-3 text-right font-semibold">价格</th><th className="pb-3 text-right font-semibold">涨跌幅</th><th className="pb-3 text-right font-semibold">评分</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{history.isLoading ? <tr><td colSpan={5} className="py-8 text-center text-slate-400">正在读取信号记录…</td></tr> : history.data?.length ? history.data.map((item, index) => <tr key={`${item.trade_date}-${item.strategy_name}-${index}`}><td className="py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{item.trade_date}</td><td className="py-3"><SignalTag label={item.strategy_name} tone="indigo" /></td><td className="py-3 text-right font-mono">{formatNumber(item.price)}</td><td className={`py-3 text-right font-mono font-semibold ${item.change_pct == null || item.change_pct === 0 ? "text-slate-500" : item.change_pct > 0 ? "text-red-500" : "text-emerald-600"}`}>{item.change_pct == null ? "—" : `${item.change_pct > 0 ? "+" : ""}${item.change_pct.toFixed(2)}%`}</td><td className="py-3 text-right font-mono text-slate-500 dark:text-slate-400">{formatNumber(item.score, 0)}</td></tr>) : <tr><td colSpan={5} className="py-8 text-center text-slate-400">暂无历史选股信号</td></tr>}</tbody></table></div></section>
-      </div>
+      <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex flex-wrap items-baseline justify-between gap-2"><div><h2 className="font-semibold text-slate-950 dark:text-white">入选后表现</h2><p className="mt-0.5 text-xs text-slate-400">以入选日收盘价为基准{performance.data?.selection_date ? ` · 入选日期 ${performance.data.selection_date}` : ""}</p></div><span className="text-xs text-slate-400">未来数据不足时显示暂无数据</span></div>
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">{PERFORMANCE_HORIZONS.map(({ horizon, label }) => { const item = performanceByHorizon.get(horizon); const value = item?.return_pct; return <div key={horizon} className="rounded-xl bg-slate-50 px-4 py-3 dark:bg-slate-800/60"><p className="text-xs text-slate-500 dark:text-slate-400">{label}</p><p className={`mt-2 font-mono text-lg font-semibold ${value == null ? "text-slate-400" : value >= 0 ? "text-red-500" : "text-emerald-600"}`}>{value == null ? "暂无数据" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`}</p>{item?.trade_date && <p className="mt-1 text-[11px] text-slate-400">截至 {item.trade_date}</p>}</div>; })}</div>
+      </section>
     </div>
   </main>;
 }
-
-function Info({ label, value }: { label: string; value: string }) { return <div className="flex items-center justify-between gap-4 py-3 text-sm"><dt className="text-slate-500 dark:text-slate-400">{label}</dt><dd className="text-right font-medium text-slate-800 dark:text-slate-200">{value}</dd></div>; }
