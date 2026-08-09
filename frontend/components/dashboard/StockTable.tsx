@@ -33,6 +33,11 @@ function formatChange(value: number | null) {
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+function detailHref(item: SelectionItem) {
+  const query = new URLSearchParams({ date: item.trade_date, strategy: item.strategy_name });
+  return `/stock/${encodeURIComponent(item.code)}?${query.toString()}`;
+}
+
 export function StockTable({ items, loading, sortKey, sortDirection, onSort }: StockTableProps) {
   const router = useRouter();
 
@@ -62,13 +67,13 @@ export function StockTable({ items, loading, sortKey, sortDirection, onSort }: S
             <tr
               key={`${item.code}-${item.strategy_name}`}
               className="cursor-pointer bg-white transition hover:bg-indigo-50/40 focus-within:bg-indigo-50/40"
-              onClick={() => router.push(`/stock/${item.code}`)}
+              onClick={() => router.push(detailHref(item))}
             >
               <td className="whitespace-nowrap px-5 py-4 font-mono text-sm text-slate-500">{item.code}</td>
               <td className="whitespace-nowrap px-5 py-4">
                 <Link
                   className="font-semibold text-slate-950 hover:text-indigo-600 hover:underline"
-                  href={`/stock/${item.code}`}
+                  href={detailHref(item)}
                   onClick={(event) => event.stopPropagation()}
                 >
                   {item.name}
@@ -88,7 +93,7 @@ export function StockTable({ items, loading, sortKey, sortDirection, onSort }: S
               <td className="whitespace-nowrap px-5 py-4 text-right">
                 <Link
                   className="inline-flex rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
-                  href={`/stock/${item.code}`}
+                  href={detailHref(item)}
                   onClick={(event) => event.stopPropagation()}
                 >
                   查看详情

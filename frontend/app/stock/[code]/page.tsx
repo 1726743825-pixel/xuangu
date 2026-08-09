@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { KlineChart, type BackendKlineRow } from "@/components/charts/KlineChart";
@@ -10,11 +11,11 @@ type Period = "daily" | "weekly" | "monthly";
 
 interface LatestQuote { code: string; name: string; price: number | null; updated_at: string | null; }
 interface StockDetail { code: string; name: string; industry: string | null; list_date?: string | null; is_st?: boolean; latest_quote?: LatestQuote | null; }
-interface SelectionPerformancePoint { horizon: "1d" | "3d" | "5d" | "10d" | "25d" | "3m"; trade_date: string | null; return_pct: number | null; }
-interface SelectionPerformance { selection_date: string | null; items: SelectionPerformancePoint[]; }
+interface SelectionPerformancePoint { label: "1d" | "3d" | "5d" | "10d" | "25d" | "3m"; target_date: string | null; return_pct: number | null; status: "ok" | "暂无数据"; }
+interface SelectionPerformance { trade_date: string; strategy_name: string; base_close: number | null; periods: SelectionPerformancePoint[]; }
 
 const PERIODS: Array<{ value: Period; label: string }> = [{ value: "daily", label: "日K" }, { value: "weekly", label: "周K" }, { value: "monthly", label: "月K" }];
-const PERFORMANCE_HORIZONS: Array<{ horizon: SelectionPerformancePoint["horizon"]; label: string }> = [
+const PERFORMANCE_HORIZONS: Array<{ horizon: SelectionPerformancePoint["label"]; label: string }> = [
   { horizon: "1d", label: "1 个交易日" }, { horizon: "3d", label: "3 个交易日" }, { horizon: "5d", label: "5 个交易日" },
   { horizon: "10d", label: "10 个交易日" }, { horizon: "25d", label: "25 个交易日" }, { horizon: "3m", label: "3 个月" },
 ];
@@ -42,15 +43,18 @@ function pctChange(rows: BackendKlineRow[], price: number | null | undefined) {
 function formatNumber(value: number | null | undefined, digits = 2) { return value == null ? "—" : value.toFixed(digits); }
 
 export default function StockDetailPage({ params }: { params: { code: string } }) {
-  const code = params.code.toUpperCase(); const [period, setPeriod] = useState<Period>("daily");
+  const code = params.code.toUpperCase(); const [period, setPeriod] = useState<Period>("daily"); const searchParams = useSearchParams();
+  const selectionDate = searchParams.get("date"); const selectionStrategy = searchParams.get("strategy");
+  const hasSelectionContext = Boolean(selectionDate && /^\d{4}-\d{2}-\d{2}$/.test(selectionDate) && selectionStrategy);
   const detail = useSWR<StockDetail>(apiUrl(`/api/stock/${encodeURIComponent(code)}/detail`), fetcher, { revalidateOnFocus: false });
   const dailyKline = useSWR<BackendKlineRow[]>(apiUrl(`/api/stock/${encodeURIComponent(code)}/kline?period=daily`), fetcher, { revalidateOnFocus: false });
   const weeklyKline = useSWR<BackendKlineRow[]>(period === "weekly" ? apiUrl(`/api/stock/${encodeURIComponent(code)}/kline?period=weekly`) : null, fetcher, { revalidateOnFocus: false });
-  const performance = useSWR<SelectionPerformance>(apiUrl(`/api/stock/${encodeURIComponent(code)}/selection-performance`), fetcher, { revalidateOnFocus: false });
+  const performanceQuery = hasSelectionContext ? new URLSearchParams({ date: selectionDate!, strategy: selectionStrategy! }) : null;
+  const performance = useSWR<SelectionPerformance>(performanceQuery ? apiUrl(`/api/selections/${encodeURIComponent(code)}/performance?${performanceQuery.toString()}`) : null, fetcher, { revalidateOnFocus: false });
   const dailyRows = useMemo(() => normaliseRows(dailyKline.data), [dailyKline.data]);
   const visibleRows = useMemo(() => period === "daily" ? dailyRows : period === "weekly" ? normaliseRows(weeklyKline.data) : monthlyBars(dailyRows), [period, dailyRows, weeklyKline.data]);
   const quote = detail.data?.latest_quote; const change = pctChange(dailyRows, quote?.price);
-  const performanceByHorizon = new Map(performance.data?.items.map((item) => [item.horizon, item]));
+  const performanceByHorizon = new Map(performance.data?.periods.map((item) => [item.label, item]));
 
   return <main className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
     <div className="mx-auto w-full max-w-[1480px] px-4 py-7 sm:px-6 lg:px-8">
@@ -69,8 +73,9 @@ export default function StockDetailPage({ params }: { params: { code: string } }
       </section>
 
       <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-wrap items-baseline justify-between gap-2"><div><h2 className="font-semibold text-slate-950 dark:text-white">入选后表现</h2><p className="mt-0.5 text-xs text-slate-400">以入选日收盘价为基准{performance.data?.selection_date ? ` · 入选日期 ${performance.data.selection_date}` : ""}</p></div><span className="text-xs text-slate-400">未来数据不足时显示暂无数据</span></div>
-        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">{PERFORMANCE_HORIZONS.map(({ horizon, label }) => { const item = performanceByHorizon.get(horizon); const value = item?.return_pct; return <div key={horizon} className="rounded-xl bg-slate-50 px-4 py-3 dark:bg-slate-800/60"><p className="text-xs text-slate-500 dark:text-slate-400">{label}</p><p className={`mt-2 font-mono text-lg font-semibold ${value == null ? "text-slate-400" : value >= 0 ? "text-red-500" : "text-emerald-600"}`}>{value == null ? "暂无数据" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`}</p>{item?.trade_date && <p className="mt-1 text-[11px] text-slate-400">截至 {item.trade_date}</p>}</div>; })}</div>
+        <div className="flex flex-wrap items-baseline justify-between gap-2"><div><h2 className="font-semibold text-slate-950 dark:text-white">入选后表现</h2><p className="mt-0.5 text-xs text-slate-400">以入选日收盘价为基准{performance.data?.trade_date ? ` · 入选日期 ${performance.data.trade_date}` : ""}</p></div><span className="text-xs text-slate-400">未来数据不足时显示暂无数据</span></div>
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">{PERFORMANCE_HORIZONS.map(({ horizon, label }) => { const item = performanceByHorizon.get(horizon); const value = item?.return_pct; return <div key={horizon} className="rounded-xl bg-slate-50 px-4 py-3 dark:bg-slate-800/60"><p className="text-xs text-slate-500 dark:text-slate-400">{label}</p><p className={`mt-2 font-mono text-lg font-semibold ${value == null ? "text-slate-400" : value >= 0 ? "text-red-500" : "text-emerald-600"}`}>{value == null ? "暂无数据" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`}</p>{item?.target_date && <p className="mt-1 text-[11px] text-slate-400">截至 {item.target_date}</p>}</div>; })}</div>
+        {!hasSelectionContext && <p className="mt-4 text-xs text-slate-400">请从选股结果列表进入详情，以读取对应入选日的真实表现。</p>}
       </section>
     </div>
   </main>;
