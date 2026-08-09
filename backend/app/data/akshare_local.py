@@ -232,15 +232,6 @@ def fetch_market_indices(
     return result
 
 
-def fetch_five_indices(
-    *, akshare_module: Any | None = None, observed_at: datetime | None = None,
-) -> list[dict[str, Any]]:
-    """Deprecated compatibility name; returns the same four-index contract."""
-    return fetch_market_indices(
-        akshare_module=akshare_module, observed_at=observed_at,
-    )
-
-
 def fetch_selected_spot(
     codes: Iterable[str],
     *,
@@ -314,7 +305,7 @@ def fill_selection_prices(
 
 __all__ = [
     "AKSHARE_SOURCE", "INDEX_SYMBOLS", "AkshareDataError", "fetch_30m_bars",
-    "fetch_daily_bars", "fetch_five_indices", "fetch_market_indices",
+    "fetch_daily_bars", "fetch_market_indices",
     "fetch_selected_spot",
     "fill_selection_prices", "validate_ohlc",
 ]

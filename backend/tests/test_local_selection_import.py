@@ -343,12 +343,11 @@ def test_intraday_import_splits_requests_at_api_limit(monkeypatch):
     assert batch_sizes == [5000, 280]
 
 
-def _five_indices():
+def _four_indices():
     rows = []
     for name, symbol, price in (
         ("上证指数", "000001.SH", 3600), ("深证成指", "399001.SZ", 11000),
-        ("创业板指", "399006.SZ", 2300), ("北证50", "899050.BJ", None),
-        ("科创50", "000688.SH", 1050),
+        ("创业板指", "399006.SZ", 2300), ("科创50", "000688.SH", 1050),
     ):
         available = price is not None
         rows.append({
@@ -359,7 +358,7 @@ def _five_indices():
     return rows
 
 
-def test_market_snapshot_posts_all_five_and_uses_latest_real_bar_time(monkeypatch):
+def test_market_snapshot_posts_all_four_and_uses_latest_real_bar_time(monkeypatch):
     monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
     monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
     captured = {}
@@ -370,14 +369,12 @@ def test_market_snapshot_posts_all_five_and_uses_latest_real_bar_time(monkeypatc
         return _PayloadResponse({"indices": 4, "stocks": 1})
 
     assert local_import.import_market_snapshots(
-        _items(""), _quote_rows(), index_loader=_five_indices, post=post,
+        _items(""), _quote_rows(), index_loader=_four_indices, post=post,
     ) == (4, 1)
     assert captured["url"] == "https://example.test/api/market/snapshots/import"
-    assert len(captured["json"]["indices"]) == 5
-    unavailable = next(row for row in captured["json"]["indices"] if row["code"] == "899050.BJ")
-    assert unavailable == {
-        "name": "北证50", "code": "899050.BJ", "available": False,
-        "price": None, "change_pct": None, "observed_at": None, "source": "akshare-sina",
+    assert len(captured["json"]["indices"]) == 4
+    assert {row["code"] for row in captured["json"]["indices"]} == {
+        "000001.SH", "399001.SZ", "399006.SZ", "000688.SH",
     }
     stock = captured["json"]["stocks"][0]
     assert stock["price"] == 1525.0
@@ -389,9 +386,9 @@ def test_market_snapshot_posts_all_five_and_uses_latest_real_bar_time(monkeypatc
 def test_market_snapshot_rejects_partial_indices_without_upload(monkeypatch):
     monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
     monkeypatch.setenv("JOB_API_TOKEN", "secret")
-    with pytest.raises(local_import.SelectionImportError, match="五指数返回不完整"):
+    with pytest.raises(local_import.SelectionImportError, match="四指数返回不完整"):
         local_import.import_market_snapshots(
-            _items(""), _quote_rows(), index_loader=lambda: _five_indices()[:-1],
+            _items(""), _quote_rows(), index_loader=lambda: _four_indices()[:-1],
             post=lambda *_args, **_kwargs: pytest.fail("partial indices must not upload"),
         )
 
@@ -406,7 +403,7 @@ def test_market_snapshot_api_failure_does_not_leak_token(monkeypatch):
         raise httpx.HTTPStatusError("unavailable", request=request, response=response)
 
     with pytest.raises(local_import.SelectionImportError, match="市场快照导入接口返回 HTTP 503") as error:
-        local_import.import_market_snapshots(_items(""), _quote_rows(), index_loader=_five_indices, post=post)
+        local_import.import_market_snapshots(_items(""), _quote_rows(), index_loader=_four_indices, post=post)
     assert "secret-not-to-print" not in str(error.value)
 
 

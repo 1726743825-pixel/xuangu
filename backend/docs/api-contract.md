@@ -106,7 +106,7 @@
 
 ## 市场快照 API
 
-`GET /api/market/indices` 始终按上证指数 `000001.SH`、深证成指 `399001.SZ`、创业板指 `399006.SZ`、科创50 `000688.SH` 的固定顺序返回四项。北证50/`899050.BJ` 不属于该接口契约。某指数从未有有效快照时仍保留该项，`price`、`change_pct`、`as_of` 为 `null`。
+`GET /api/market/indices` 始终按上证指数 `000001.SH`、深证成指 `399001.SZ`、创业板指 `399006.SZ`、科创50 `000688.SH` 的固定顺序返回四项。某指数从未有有效快照时仍保留该项，`price`、`change_pct`、`as_of` 为 `null`。
 
 `POST /api/market/snapshots/import` 的 `indices` 必须恰好包含上述四项各一次，每项必须显式提供 `available`：
 

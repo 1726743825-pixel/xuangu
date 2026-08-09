@@ -505,16 +505,16 @@ def import_market_snapshots(
     items: list[dict],
     daily_quotes: list[dict],
     *,
-    index_loader: Callable[..., list[dict]] = akshare_local.fetch_five_indices,
+    index_loader: Callable[..., list[dict]] = akshare_local.fetch_market_indices,
     post: Callable[..., httpx.Response] = httpx.post,
 ) -> tuple[int, int]:
-    """Atomically submit all five indices plus available selected-stock closes."""
+    """Atomically submit all four indices plus available selected-stock closes."""
     selection_url, token = _api_config()
     try:
         raw_indices = index_loader()
     except akshare_local.AkshareDataError as exc:
-        raise SelectionImportError(f"五指数读取失败: {exc}") from exc
-    expected = {"000001.SH", "399001.SZ", "399006.SZ", "899050.BJ", "000688.SH"}
+        raise SelectionImportError(f"四指数读取失败: {exc}") from exc
+    expected = {"000001.SH", "399001.SZ", "399006.SZ", "000688.SH"}
     indices = []
     for row in raw_indices:
         code = str(row.get("symbol") or row.get("code") or "")
@@ -526,8 +526,8 @@ def import_market_snapshots(
             "observed_at": row.get("observed_at") if available else None,
             "source": row.get("source"),
         })
-    if len(indices) != 5 or {row["code"] for row in indices} != expected:
-        raise SelectionImportError("五指数返回不完整，已拒绝上传整个集合")
+    if len(indices) != 4 or {row["code"] for row in indices} != expected:
+        raise SelectionImportError("四指数返回不完整，已拒绝上传整个集合")
 
     stocks, missing = _stock_snapshots_from_daily_quotes(items, daily_quotes)
     if missing:

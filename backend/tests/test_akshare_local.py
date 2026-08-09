@@ -106,14 +106,6 @@ def test_market_index_mapping_and_weekend_observation_semantics():
     assert len(rows) == 4
     assert not any(row["name"] == "沪深300" for row in rows)
 
-    compatibility_rows = akshare_local.fetch_five_indices(
-        akshare_module=ak,
-        observed_at=datetime(2026, 8, 9, 18, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
-    )
-    assert compatibility_rows == rows
-    assert len(compatibility_rows) == 4
-
-
 def test_selected_spot_filters_codes_but_does_not_invent_price_date():
     frame = pd.DataFrame([
         {"代码": "sz301080", "名称": "百普赛斯", "最新价": 64.75, "涨跌额": 10.79,
