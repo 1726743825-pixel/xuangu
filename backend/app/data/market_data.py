@@ -893,6 +893,17 @@ def _clean_kline_row(
     low_value = _price(low)
     volume_value = _number(volume)
     previous = _price(previous_close)
+    if all(value is not None for value in (open_value, close_value, high_value, low_value)):
+        assert open_value is not None and close_value is not None
+        assert high_value is not None and low_value is not None
+        if high_value < max(open_value, close_value, low_value) or low_value > min(
+            open_value, close_value, high_value
+        ):
+            raise MarketDataError(
+                "OHLC invariant failed for "
+                f"{code} {moment}: open={open_value}, high={high_value}, "
+                f"low={low_value}, close={close_value}"
+            )
     is_suspended = not volume_value or any(
         value is None for value in (open_value, close_value, high_value, low_value)
     )
