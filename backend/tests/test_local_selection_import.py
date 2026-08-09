@@ -46,6 +46,22 @@ def test_import_local_selection_posts_contract_with_token(monkeypatch):
     assert captured["headers"]["X-Job-Token"] == "secret-not-to-print"
 
 
+def test_import_selection_maps_authoritative_turnover_and_board_metrics(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
+    captured = {}
+
+    def post(_url, **kwargs):
+        captured.update(kwargs)
+        return _Response(1)
+
+    official_item = [{**_items("")[0], "turnover": 11.7, "board_count": 2}]
+    assert local_import.import_selections("2026-08-07", selector=lambda _: official_item, post=post) == 1
+    imported = captured["json"]["items"][0]
+    assert imported["turnover_rate"] == 11.7
+    assert imported["board_count"] == 2
+
+
 def test_import_local_selection_rejects_empty_results(monkeypatch):
     monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
     monkeypatch.setenv("JOB_API_TOKEN", "secret")
@@ -85,7 +101,7 @@ def test_main_success_log_uses_actual_trade_date(monkeypatch, capsys):
     monkeypatch.setattr(local_import, "_import_selection_run", lambda *_args, **_kwargs: local_import.SelectionImportRun(10, "2026-08-07", _items("")))
     monkeypatch.setattr(local_import, "import_quote_history", lambda *_: 120)
 
-    assert local_import.main(["--trade-date", "2026-08-08", "--env-file", "unused.env"]) == 0
+    assert local_import.main(["--trade-date", "2026-08-07", "--env-file", "unused.env"]) == 0
     assert "trade_date=2026-08-07, selections=10, quotes=120" in capsys.readouterr().out
 
 
@@ -99,8 +115,34 @@ def test_main_passes_replace_flag_only_when_requested(monkeypatch):
 
     monkeypatch.setattr(local_import, "_import_selection_run", selection_run)
     monkeypatch.setattr(local_import, "import_quote_history", lambda *_: 1)
-    assert local_import.main(["--replace-existing", "--env-file", "unused.env"]) == 0
+    assert local_import.main(["--trade-date", "2026-08-07", "--replace-existing", "--env-file", "unused.env"]) == 0
     assert captured["replace_existing"] is True
+
+
+def test_main_skips_weekends_without_running_or_uploading(monkeypatch, capsys):
+    monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
+    monkeypatch.setattr(local_import, "_import_selection_run", lambda *_args, **_kwargs: pytest.fail("weekend must not select"))
+
+    assert local_import.main(["--trade-date", "2026-08-09", "--env-file", "unused.env"]) == 0
+    assert "非交易日，跳过" in capsys.readouterr().out
+
+
+def test_authoritative_screener_failure_does_not_upload(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
+    uploaded = False
+
+    def selector(_):
+        raise local_import.LocalSelectionDataError("官方报告未生成")
+
+    def post(*_args, **_kwargs):
+        nonlocal uploaded
+        uploaded = True
+        return _Response(1)
+
+    with pytest.raises(local_import.LocalSelectionDataError, match="官方报告未生成"):
+        local_import.import_selections("2026-08-07", selector=selector, post=post)
+    assert uploaded is False
 
 
 def test_import_local_selection_rejects_missing_token(monkeypatch):

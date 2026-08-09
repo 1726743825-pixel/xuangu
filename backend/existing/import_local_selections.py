@@ -66,6 +66,19 @@ def _result_trade_date(items: list[dict]) -> str:
     return result_date
 
 
+def _normalise_selection_items(items: list[dict]) -> list[dict]:
+    """Preserve authoritative report metrics under the public API field names."""
+    normalised: list[dict] = []
+    for item in items:
+        row = dict(item)
+        # The official HTML labels the metric ``turnover``; the import API and
+        # persisted signals contract call the same metric ``turnover_rate``.
+        if row.get("turnover_rate") is None and row.get("turnover") is not None:
+            row["turnover_rate"] = row["turnover"]
+        normalised.append(row)
+    return normalised
+
+
 def _api_config() -> tuple[str, str]:
     url = os.environ.get("SELECTION_IMPORT_URL", "").strip()
     token = os.environ.get("JOB_API_TOKEN", "").strip()
@@ -94,7 +107,7 @@ def _import_selection_run(
     """Select locally and submit one import request with its actual trade date."""
     url, token = _api_config()
 
-    items = selector(trade_date)
+    items = _normalise_selection_items(selector(trade_date))
     if not items:
         raise SelectionImportError("本地选股结果为空，已拒绝上传")
     result_date = _result_trade_date(items)
@@ -240,6 +253,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _load_env_file(Path(args.env_file))
     try:
+        requested_date = date.fromisoformat(args.trade_date)
+        if requested_date.weekday() >= 5:
+            print(f"非交易日，跳过本地选股与上传: {requested_date.isoformat()}")
+            return 0
         selection_run = _import_selection_run(args.trade_date, replace_existing=args.replace_existing)
         quote_count = import_quote_history(selection_run.trade_date, selection_run.items)
     except (SelectionImportError, LocalSelectionDataError, ValueError) as exc:

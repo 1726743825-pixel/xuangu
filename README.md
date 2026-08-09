@@ -141,15 +141,17 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 `-ReplaceExisting` 不会上传到计划任务默认命令；不要把它加入每日自动任务。替换前确认结果属于单一策略，并确认目标日期无误。
 
-确认手动运行正常后，以下命令才会**创建/更新** Windows 任务计划程序任务；它每天本机时间 15:40 运行，仅在当前用户已登录且位于国内网络时执行：
+确认手动运行正常后，以下命令才会**创建/更新** Windows 任务计划程序任务；它每天本机时间 15:05 运行，仅在当前用户已登录且位于国内网络时执行。任务通过 `backend/existing/selection_script.py` 运行用户拥有的 `D:\Program Files\xuangu\stock_screener.js`，读取其新生成的 HTML 报告；项目内置策略已禁用，不参与本机每日导入：
 
 ```powershell
 .\scripts\install-local-selection-task.ps1
 ```
 
-检查任务：`Get-ScheduledTask -TaskName Xuangu-LocalSelectionImport`。任务定义不保存令牌；令牌从未提交的 `.env` 或当前用户环境变量读取。空选股结果会被拒绝上传，避免用空数据覆盖网站已有结果。
+检查任务：`Get-ScheduledTask -TaskName Xuangu-LocalSelectionImport`。任务定义不保存令牌；令牌从未提交的 `.env` 或当前用户环境变量读取。空选股结果会被拒绝上传，避免用空数据覆盖网站已有结果。周六、周日会在调用官方脚本前安全跳过且不上传；交易日官方脚本或报告不可用时任务以非零退出码失败，也不会上传任何结果。
 
 日 K 导入地址由 `SELECTION_IMPORT_URL` 自动派生为同域的 `/api/quotes/import`，无需配置第二个 URL 或令牌。个别入选股票的 K 线不可用时会记录代码并继续上传其他真实数据；如果所有入选股票都没有可用日 K，任务会以非零退出码失败，避免把空结果伪装成成功。
+
+官方报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果；日 K 同步仍只服务详情页和收益计算，不参与候选股计算。
 
 ### Render / Railway 后端
 
