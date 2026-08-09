@@ -22,6 +22,22 @@ python existing/selection_script.py > selections.json
 
 输出为 JSON 数组；用它作为导入接口请求体的 `items`。脚本需要 Windows 本机安装 Node.js，并且 D 盘正式脚本与 `result/` 目录可访问；结果日期以官方 HTML 的生成日期为准。外层 `import_local_selections.py` 负责读取令牌并上传。本机不需要 Railway 数据库或项目行情源配置。不要将密钥、数据库文件、临时下载行情或 `node_modules` 提交到此目录。
 
+指定历史官方报告（不会运行 Node.js；指定日期必须与报告日期严格一致）：
+
+```powershell
+python existing/selection_script.py 2026-08-09 --report-path 'D:\Program Files\xuangu\result\选股结果2026年08月09日.html'
+```
+
+导入器可通过一次性环境变量进入该只读模式；不要把路径写入 `.env`，以免日常任务重复导入历史报告：
+
+```powershell
+$env:XUANGU_OFFICIAL_REPORT_PATH = 'D:\Program Files\xuangu\result\选股结果2026年08月09日.html'
+python existing/import_local_selections.py --trade-date 2026-08-09 --env-file ..\.env --replace-existing
+Remove-Item Env:XUANGU_OFFICIAL_REPORT_PATH
+```
+
+未指定报告的日常 15:05 模式在周末会拒绝执行 D 盘脚本。
+
 ## Python 脚本接口
 
 ```python

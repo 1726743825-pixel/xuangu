@@ -8,6 +8,7 @@ import pytest
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "existing" / "selection_script.py"
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "official_screener_report.html"
+OFFICIAL_REPORT_PATH = Path(r"D:\Program Files\xuangu\result\选股结果2026年08月09日.html")
 SPEC = importlib.util.spec_from_file_location("local_selection_script", SCRIPT_PATH)
 assert SPEC and SPEC.loader
 selection_script = importlib.util.module_from_spec(SPEC)
@@ -16,7 +17,7 @@ SPEC.loader.exec_module(selection_script)
 
 def test_parse_official_report_preserves_authoritative_fields(monkeypatch):
     monkeypatch.setattr(selection_script, "fill_missing_selection_prices", lambda items: items)
-    items = selection_script.parse_official_report(FIXTURE_PATH)
+    items = selection_script.run_selection_from_report(FIXTURE_PATH, "2026-08-09")
 
     assert len(items) == 2
     first = items[0]
@@ -56,3 +57,27 @@ def test_parse_official_report_rejects_reports_without_rows(tmp_path):
 
     with pytest.raises(selection_script.LocalSelectionDataError, match="未包含可导入"):
         selection_script.parse_official_report(report)
+
+
+def test_specified_report_rejects_missing_file_and_date_mismatch(monkeypatch):
+    monkeypatch.setattr(selection_script, "fill_missing_selection_prices", lambda items: items)
+    with pytest.raises(selection_script.LocalSelectionDataError, match="不存在"):
+        selection_script.run_selection_from_report("missing.html", "2026-08-09")
+    with pytest.raises(selection_script.LocalSelectionDataError, match="不一致"):
+        selection_script.run_selection_from_report(FIXTURE_PATH, "2026-08-08")
+
+
+def test_weekend_without_explicit_report_never_starts_node(monkeypatch):
+    monkeypatch.setattr(selection_script.subprocess, "run", lambda *args, **kwargs: pytest.fail("weekend must skip node"))
+    with pytest.raises(selection_script.LocalSelectionDataError, match="非交易日"):
+        selection_script.run_selection("2026-08-09")
+
+
+@pytest.mark.skipif(not OFFICIAL_REPORT_PATH.is_file(), reason="D 盘官方报告仅存在于本地执行主机")
+def test_current_d_drive_report_has_ten_importable_items(monkeypatch):
+    monkeypatch.setattr(selection_script, "fill_missing_selection_prices", lambda items: items)
+
+    items = selection_script.run_selection_from_report(OFFICIAL_REPORT_PATH, "2026-08-09")
+
+    assert len(items) == 10
+    assert {item["trade_date"] for item in items} == {"2026-08-09"}
