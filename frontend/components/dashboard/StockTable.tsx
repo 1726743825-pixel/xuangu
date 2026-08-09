@@ -28,11 +28,21 @@ export function StockTable({ items, loading }: StockTableProps) {
 
   return (
     <div className="max-w-full overflow-x-auto overscroll-x-contain">
-      <table className="w-full min-w-[1060px] table-auto border-collapse">
+      <table className="w-full min-w-[940px] table-fixed border-collapse">
+        <colgroup>
+          <col className="w-[92px]" />
+          <col className="w-[150px]" />
+          <col className="w-[132px]" />
+          <col className="w-[120px]" />
+          <col className="w-[100px]" />
+          <col className="w-[76px]" />
+          <col className="w-[160px]" />
+          <col className="w-[110px]" />
+        </colgroup>
         <thead>
           <tr className="border-b border-slate-200 bg-slate-50/80">
-            <th className="sticky left-0 z-20 w-[76px] min-w-[76px] whitespace-nowrap bg-slate-50 px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-5">代码</th>
-            <th className="sticky left-[76px] z-20 min-w-[132px] whitespace-nowrap bg-slate-50 px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-5">名称</th>
+            <th className="sticky left-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-4">代码</th>
+            <th className="sticky left-[92px] z-20 whitespace-nowrap bg-slate-50 px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-4">名称</th>
             <th className="whitespace-nowrap px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-5">选入当日价格</th>
             <th className="whitespace-nowrap px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-5">当前价格</th>
             <th className="whitespace-nowrap px-3 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-5">涨跌幅</th>
@@ -52,18 +62,19 @@ export function StockTable({ items, loading }: StockTableProps) {
               className="cursor-pointer bg-white transition hover:bg-indigo-50/40 focus-within:bg-indigo-50/40"
               onClick={() => router.push(detailHref(item))}
             >
-              <td className="sticky left-0 z-10 w-[76px] min-w-[76px] whitespace-nowrap bg-white px-3 py-4 font-mono text-sm text-slate-500 sm:px-5">{item.code}</td>
-              <td className="sticky left-[76px] z-10 min-w-[132px] whitespace-nowrap bg-white px-3 py-4 sm:px-5">
+              <td className="sticky left-0 z-10 whitespace-nowrap bg-white px-3 py-4 font-mono text-sm text-slate-500 sm:px-4">{item.code}</td>
+              <td className="sticky left-[92px] z-10 min-w-0 bg-white px-3 py-4 sm:px-4">
                 <Link
-                  className="font-semibold text-slate-950 hover:text-indigo-600 hover:underline"
+                  className="block truncate font-semibold text-slate-950 hover:text-indigo-600 hover:underline"
                   href={detailHref(item)}
                   onClick={(event) => event.stopPropagation()}
+                  title={item.name}
                 >
                   {item.name}
                 </Link>
               </td>
-              <td className="whitespace-nowrap px-3 py-4 text-right sm:px-5"><div className="font-mono text-sm font-medium text-slate-800">{formatPrice(item.selection_price)}</div><div className="mt-0.5 text-[10px] text-slate-400">{item.selection_price_date ?? "—"}</div></td>
-              <td className="whitespace-nowrap px-3 py-4 text-right sm:px-5"><div className="font-mono text-sm font-medium text-slate-800">{formatPrice(item.current_price)}</div><div className="mt-0.5 max-w-32 truncate text-[10px] text-slate-400" title={item.current_price_as_of ?? undefined}>{item.current_price_as_of ?? "—"}</div></td>
+              <td className="whitespace-nowrap px-3 py-4 text-right font-mono text-sm font-medium text-slate-800 sm:px-5">{formatPrice(item.selection_price)}</td>
+              <td className="whitespace-nowrap px-3 py-4 text-right font-mono text-sm font-medium text-slate-800 sm:px-5">{formatPrice(item.current_price)}</td>
               <td className={`whitespace-nowrap px-3 py-4 text-right font-mono text-sm font-semibold sm:px-5 ${item.change_pct == null || item.change_pct === 0 ? "text-slate-500" : item.change_pct > 0 ? "text-red-500" : "text-emerald-600"}`}>
                 {formatChange(item.change_pct)}
               </td>

@@ -15,7 +15,7 @@ function findIndex(items: MarketIndexItem[], target: (typeof INDEXES)[number]) {
   return items.find((item) => item.name === target.name || target.codes.some((code) => code === item.code));
 }
 
-export function MarketIndexCards({ items, loading, failed }: { items: MarketIndexItem[]; loading: boolean; failed: boolean }) {
+export function MarketIndexCards({ items, loading }: { items: MarketIndexItem[]; loading: boolean }) {
   return (
     <section className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="主要市场指数">
       {INDEXES.map((target) => {
@@ -31,9 +31,8 @@ export function MarketIndexCards({ items, loading, failed }: { items: MarketInde
             <p className={`mt-3 truncate font-mono text-xl font-bold tracking-tight sm:text-2xl ${item?.price == null ? "text-slate-400" : "text-slate-950"}`}>
               {loading ? "加载中…" : formatPrice(item?.price)}
             </p>
-            <div className="mt-2 flex min-w-0 items-center justify-between gap-2 text-xs">
+            <div className="mt-2 text-xs">
               <span className={`font-mono font-semibold ${tone}`}>{change == null ? "—" : `${change > 0 ? "+" : ""}${change.toFixed(2)}%`}</span>
-              <span className="truncate text-right text-[10px] text-slate-400">{failed || !item ? "暂无数据" : item.as_of ?? "更新时间未知"}</span>
             </div>
           </article>
         );

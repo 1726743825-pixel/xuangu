@@ -94,7 +94,7 @@ export function Dashboard() {
             </div>
           )}
 
-          <MarketIndexCards items={indices.data?.items ?? []} loading={!indices.data && !indices.error} failed={Boolean(indices.error)} />
+          <MarketIndexCards items={indices.data?.items ?? []} loading={!indices.data && !indices.error} />
 
           <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
             <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">

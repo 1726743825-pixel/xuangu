@@ -23,7 +23,10 @@ assert.match(table, /当前价格/);
 assert.match(table, /总分/);
 assert.match(table, /item\.selection_price/);
 assert.match(table, /item\.current_price/);
-assert.doesNotMatch(table, /formatPrice\(item\.price\)|策略信号|>\{item\.strategy_name\}</);
+assert.doesNotMatch(table, /formatPrice\(item\.price\)|策略信号|>\{item\.strategy_name\}<|item\.selection_price_date|item\.current_price_as_of/);
+assert.doesNotMatch(cards, /item\.as_of|observed_at|更新时间/);
+assert.match(table, /table-fixed/);
+assert.match(table, /<colgroup>/);
 
 assert.match(detail, /\[\{ value: "30m", label: "30分钟" \}, \{ value: "daily", label: "日K" \}, \{ value: "weekly", label: "周K" \}\]/);
 assert.match(detail, /row\.length !== 6/);
