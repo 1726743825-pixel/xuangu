@@ -2,37 +2,36 @@
 
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { apiUrl, fetcher, getLatestTradingDate } from "./api";
+import { apiUrl, fetcher, getShanghaiToday } from "./api";
 import { DashboardFilters } from "./DashboardFilters";
+import { MarketIndexCards } from "./MarketIndexCards";
 import { Pagination } from "./Pagination";
-import { StatsCards } from "./StatsCards";
 import { StockTable } from "./StockTable";
-import type { SelectionItem, SelectionPage, SortDirection, SortKey, StockPage } from "./types";
+import type { MarketIndices, SelectionItem, SelectionPage, StockPage } from "./types";
 
 const PAGE_SIZE = 10;
 
-function compareValues(a: SelectionItem, b: SelectionItem, key: SortKey) {
-  const left = a[key];
-  const right = b[key];
-  if (left == null) return 1;
-  if (right == null) return -1;
-  if (typeof left === "number" && typeof right === "number") return left - right;
-  return String(left).localeCompare(String(right), "zh-CN", { numeric: true });
+function compareScoreDescending(a: SelectionItem, b: SelectionItem) {
+  if (a.score == null && b.score == null) return a.code.localeCompare(b.code, "zh-CN", { numeric: true });
+  if (a.score == null) return 1;
+  if (b.score == null) return -1;
+  return b.score - a.score || a.code.localeCompare(b.code, "zh-CN", { numeric: true });
 }
 
 export function Dashboard() {
-  const [date, setDate] = useState(getLatestTradingDate);
+  const [date, setDate] = useState(getShanghaiToday);
   const [strategy, setStrategy] = useState("");
   const [industry, setIndustry] = useState("");
   const [page, setPage] = useState(1);
-  const [sortKey, setSortKey] = useState<SortKey>("change_pct");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
 
   const selections = useSWR<SelectionPage>(apiUrl(`/api/selections?date=${encodeURIComponent(date)}`), fetcher, {
     keepPreviousData: true,
     revalidateOnFocus: false,
   });
   const stocks = useSWR<StockPage>(apiUrl("/api/stocks?page=1&size=100"), fetcher, {
+    revalidateOnFocus: false,
+  });
+  const indices = useSWR<MarketIndices>(apiUrl("/api/market/indices"), fetcher, {
     revalidateOnFocus: false,
   });
 
@@ -46,26 +45,17 @@ export function Dashboard() {
   const filteredItems = useMemo(() => items
     .filter((item) => !strategy || item.strategy_name === strategy)
     .filter((item) => !industry || item.industry === industry)
-    .sort((a, b) => compareValues(a, b, sortKey) * (sortDirection === "asc" ? 1 : -1)), [items, strategy, industry, sortKey, sortDirection]);
+    .sort(compareScoreDescending), [items, strategy, industry]);
 
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const pageItems = filteredItems.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const error = selections.error || stocks.error;
-  const refreshing = selections.isValidating || stocks.isValidating;
+  const refreshing = selections.isValidating || stocks.isValidating || indices.isValidating;
 
   function resetPageAnd<T>(setter: (value: T) => void, value: T) {
     setPage(1);
     setter(value);
-  }
-
-  function handleSort(key: SortKey) {
-    setPage(1);
-    if (key === sortKey) setSortDirection((current) => current === "asc" ? "desc" : "asc");
-    else {
-      setSortKey(key);
-      setSortDirection(key === "name" || key === "code" || key === "strategy_name" ? "asc" : "desc");
-    }
   }
 
   return (
@@ -78,7 +68,8 @@ export function Dashboard() {
               Selection dashboard
             </div>
             <h1 className="text-3xl font-bold tracking-tight text-slate-950">选股结果</h1>
-            <p className="mt-2 text-sm text-slate-500">聚合每日策略信号，快速定位值得关注的股票。</p>
+            <p className="mt-2 text-sm text-slate-500">聚合每日选股结果，快速查看价格与评分。</p>
+            <p className="mt-2 max-w-4xl text-xs leading-5 text-slate-400">数据来源：AKShare（开源免费接口）｜本系统仅展示公开市场数据与技术指标，不构成任何投资建议。股市有风险，投资需谨慎</p>
           </div>
           <p className="text-xs text-slate-400">数据日期 · {date}</p>
         </header>
@@ -94,7 +85,7 @@ export function Dashboard() {
             onDateChange={(value) => resetPageAnd(setDate, value)}
             onStrategyChange={(value) => resetPageAnd(setStrategy, value)}
             onIndustryChange={(value) => resetPageAnd(setIndustry, value)}
-            onRefresh={() => void Promise.all([selections.mutate(), stocks.mutate()])}
+            onRefresh={() => void Promise.all([selections.mutate(), stocks.mutate(), indices.mutate()])}
           />
 
           {error && (
@@ -103,17 +94,17 @@ export function Dashboard() {
             </div>
           )}
 
-          <StatsCards items={items} />
+          <MarketIndexCards items={indices.data?.items ?? []} loading={!indices.data && !indices.error} failed={Boolean(indices.error)} />
 
           <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-            <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-5 py-4">
+            <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
               <div>
                 <h2 className="font-semibold text-slate-950">股票列表</h2>
                 <p className="mt-0.5 text-xs text-slate-400">点击股票名称或整行进入详情</p>
               </div>
               <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">{filteredItems.length} 条结果</span>
             </div>
-            <StockTable items={pageItems} loading={!selections.data && !selections.error} sortKey={sortKey} sortDirection={sortDirection} onSort={handleSort} />
+            <StockTable items={pageItems} loading={!selections.data && !selections.error} />
             <Pagination page={safePage} pageSize={PAGE_SIZE} total={filteredItems.length} onPageChange={setPage} />
           </section>
         </div>

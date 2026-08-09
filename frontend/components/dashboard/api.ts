@@ -19,16 +19,13 @@ export async function fetcher<T>(url: string): Promise<T> {
   return payload as T;
 }
 
-export function getLatestTradingDate() {
-  const chinaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
-  const candidate = new Date(
-    Date.UTC(chinaNow.getUTCFullYear(), chinaNow.getUTCMonth(), chinaNow.getUTCDate()),
-  );
-
-  // 当日收盘前默认查看上一个完整交易日。
-  if (chinaNow.getUTCHours() < 15) candidate.setUTCDate(candidate.getUTCDate() - 1);
-  while (candidate.getUTCDay() === 0 || candidate.getUTCDay() === 6) {
-    candidate.setUTCDate(candidate.getUTCDate() - 1);
-  }
-  return candidate.toISOString().slice(0, 10);
+export function getShanghaiToday() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const value = (type: "year" | "month" | "day") => parts.find((part) => part.type === type)?.value ?? "";
+  return `${value("year")}-${value("month")}-${value("day")}`;
 }

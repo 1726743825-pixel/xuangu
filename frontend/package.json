@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "check:contract": "node scripts/verify-dashboard-contract.mjs",
     "start": "next start"
   },
   "dependencies": {

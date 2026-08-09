@@ -3,6 +3,10 @@ export type SelectionItem = {
   name: string;
   trade_date: string;
   price: number | null;
+  selection_price: number | null;
+  selection_price_date: string | null;
+  current_price: number | null;
+  current_price_as_of: string | null;
   change_pct: number | null;
   score: number | null;
   strategy_name: string;
@@ -32,5 +36,14 @@ export type StockPage = {
   total: number;
 };
 
-export type SortKey = "code" | "name" | "price" | "change_pct" | "strategy_name";
-export type SortDirection = "asc" | "desc";
+export type MarketIndexItem = {
+  name: string;
+  code: string;
+  price: number | null;
+  change_pct: number | null;
+  as_of: string | null;
+};
+
+export type MarketIndices = {
+  items: MarketIndexItem[];
+};

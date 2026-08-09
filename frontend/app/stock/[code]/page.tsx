@@ -14,7 +14,7 @@ interface StockDetail { code: string; name: string; industry: string | null; lis
 interface SelectionPerformancePoint { label: "1d" | "3d" | "5d" | "10d" | "25d" | "3m"; target_date: string | null; return_pct: number | null; status: "ok" | "暂无数据"; }
 interface SelectionPerformance { trade_date: string; strategy_name: string; base_close: number | null; periods: SelectionPerformancePoint[]; }
 
-const PERIODS: Array<{ value: Period; label: string }> = [{ value: "daily", label: "日K" }, { value: "weekly", label: "周K" }, { value: "30m", label: "30分" }];
+const PERIODS: Array<{ value: Period; label: string }> = [{ value: "30m", label: "30分钟" }, { value: "daily", label: "日K" }, { value: "weekly", label: "周K" }];
 const PERFORMANCE_HORIZONS: Array<{ horizon: SelectionPerformancePoint["label"]; label: string }> = [
   { horizon: "1d", label: "1 个交易日" }, { horizon: "3d", label: "3 个交易日" }, { horizon: "5d", label: "5 个交易日" },
   { horizon: "10d", label: "10 个交易日" }, { horizon: "25d", label: "25 个交易日" }, { horizon: "3m", label: "3 个月" },
@@ -22,12 +22,16 @@ const PERFORMANCE_HORIZONS: Array<{ horizon: SelectionPerformancePoint["label"];
 
 function normaliseRows(value: unknown): BackendKlineRow[] {
   if (!Array.isArray(value)) return [];
-  return value.flatMap((row): BackendKlineRow[] => {
-    if (!Array.isArray(row) || row.length < 6 || typeof row[0] !== "string" || !/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(row[0])) return [];
-    const [open, close, low, high, volume] = row.slice(1, 6).map(Number);
-    if (![open, close, low, high, volume].every(Number.isFinite) || low > Math.min(open, close) || high < Math.max(open, close) || volume < 0) return [];
-    return [[row[0], open, close, low, high, volume]];
-  });
+  const rows: BackendKlineRow[] = [];
+  for (const row of value) {
+    if (!Array.isArray(row) || row.length !== 6 || typeof row[0] !== "string" || !/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(row[0])) return [];
+    const values = row.slice(1, 6);
+    if (!values.every((item) => typeof item === "number" && Number.isFinite(item))) return [];
+    const [open, close, low, high, volume] = values as number[];
+    if (low > Math.min(open, close) || high < Math.max(open, close) || volume < 0) return [];
+    rows.push([row[0], open, close, low, high, volume]);
+  }
+  return rows;
 }
 function pctChange(rows: BackendKlineRow[], price: number | null | undefined) {
   const current = price ?? rows.at(-1)?.[2]; const previous = rows.length > 1 ? rows.at(-2)?.[2] : null;
@@ -37,7 +41,7 @@ function pctChange(rows: BackendKlineRow[], price: number | null | undefined) {
 function formatNumber(value: number | null | undefined, digits = 2) { return value == null ? "—" : value.toFixed(digits); }
 
 export default function StockDetailPage({ params }: { params: { code: string } }) {
-  const code = params.code.toUpperCase(); const [period, setPeriod] = useState<Period>("daily"); const searchParams = useSearchParams();
+  const code = params.code.toUpperCase(); const [period, setPeriod] = useState<Period>("30m"); const searchParams = useSearchParams();
   const selectionDate = searchParams.get("date"); const selectionStrategy = searchParams.get("strategy");
   const hasSelectionContext = Boolean(selectionDate && /^\d{4}-\d{2}-\d{2}$/.test(selectionDate) && selectionStrategy);
   const detail = useSWR<StockDetail>(apiUrl(`/api/stock/${encodeURIComponent(code)}/detail`), fetcher, { revalidateOnFocus: false });
@@ -51,7 +55,7 @@ export default function StockDetailPage({ params }: { params: { code: string } }
 
   const intradayKline = useSWR<BackendKlineRow[]>(period === "30m" ? apiUrl(`/api/stock/${encodeURIComponent(code)}/kline?period=30m`) : null, fetcher, { revalidateOnFocus: false });
   const visibleRows = useMemo(() => period === "daily" ? dailyRows : period === "weekly" ? normaliseRows(weeklyKline.data) : normaliseRows(intradayKline.data), [period, dailyRows, weeklyKline.data, intradayKline.data]);
-  const klineLoading = dailyKline.isLoading || (period === "weekly" && weeklyKline.isLoading) || (period === "30m" && intradayKline.isLoading);
+  const klineLoading = period === "daily" ? dailyKline.isLoading : period === "weekly" ? weeklyKline.isLoading : intradayKline.isLoading;
 
   return <main className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
     <div className="mx-auto w-full max-w-[1480px] px-4 py-7 sm:px-6 lg:px-8">
@@ -66,7 +70,7 @@ export default function StockDetailPage({ params }: { params: { code: string } }
 
       <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-slate-950 dark:text-white">行情走势</h2><p className="mt-0.5 text-xs text-slate-400">K线 · 成交额</p></div><div className="inline-flex w-fit rounded-lg bg-slate-100 p-1 dark:bg-slate-800">{PERIODS.map((item) => <button key={item.value} type="button" onClick={() => setPeriod(item.value)} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${period === item.value ? "bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-300" : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"}`}>{item.label}</button>)}</div></div>
-        <div className="p-2 sm:p-4"><KlineChart data={visibleRows} height={560} showForecast={period === "daily"} loading={klineLoading} emptyMessage={period === "30m" ? "暂无 30 分钟 K 线数据（需后端提供 period=30m 真实行情）" : "暂无 K 线数据"} /></div>
+        <div className="p-2 sm:p-4"><KlineChart data={visibleRows} height={560} showForecast={period === "daily"} loading={klineLoading} emptyMessage={period === "30m" ? "暂无 30 分钟 K 线数据" : "暂无 K 线数据"} /></div>
       </section>
 
       <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
