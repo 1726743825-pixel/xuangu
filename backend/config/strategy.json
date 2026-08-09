@@ -1,6 +1,6 @@
 {
   "builtin": {
-    "enabled": true,
+    "enabled": false,
     "name": "超短线技术共振",
     "top_n": 10,
     "minimum_score": 60,

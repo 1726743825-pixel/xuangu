@@ -65,6 +65,16 @@ def test_chinext_codes_are_accepted_and_scored(code: str):
     assert result[0]["score"] >= 0
 
 
+def test_public_strategy_runner_is_disabled_without_reading_market_data(monkeypatch):
+    monkeypatch.setattr(
+        engine.market_dao,
+        "read_daily_bars",
+        lambda **kwargs: pytest.fail("disabled internal strategy must not read market data"),
+    )
+
+    assert engine.run_selection("2026-08-07") == []
+
+
 def test_custom_result_normalisation():
     result = engine._normalise_custom(
         [{"code": "SH600519", "name": "贵州茅台", "score": 88, "indicators": {"ma20": 1}}],

@@ -12,15 +12,15 @@
 | `source/` | 原始 Node.js 脚本、配置和资料 | 只读保留；必须先经受控包装器转换输出 |
 | `README.md` | 本目录的接入契约 | 与 `../docs/api-contract.md` 保持一致 |
 
-`selection_script.py` 是供国内网络本机运行的选股入口：它通过项目的数据层拉取日线，并复用内置策略评分，返回可直接作为 `/api/selections/import` 的 `items` 的记录。它不连接 Railway 数据库，也不执行 HTTP 导入；外层本地定时脚本负责上传。数据源不可用时它会抛出带原因的 `LocalSelectionDataError`，不会把失败伪装成空选股结果。生产端策略配置已关闭 custom 动态加载，防止 Railway 执行这个本地入口。
+`selection_script.py` 是供国内网络本机运行的适配器：它只执行 `D:\Program Files\xuangu\stock_screener.js`，然后解析该脚本新生成的 HTML 报告，返回可直接作为 `/api/selections/import` 的 `items`。它不连接 Railway 数据库、不拉取项目行情，也不重算 MA/MACD/KDJ 或任何内部策略评分；评分、评级和明细完全以 D 盘正式脚本为准。D 盘资产只读。生产端 `builtin.enabled=false` 且 custom 动态加载关闭，防止 Railway 回退执行内部策略。
 
 在 `backend/` 目录执行：
 
 ```powershell
-python existing/selection_script.py 2026-08-07 > selections.json
+python existing/selection_script.py > selections.json
 ```
 
-输出为 JSON 数组；用它作为导入接口请求体的 `items`。日期参数可省略；省略时使用最近交易日，显式传入周末也会回退至最近交易日，因此不会产生周六/周日的空 K 线或导入记录。本机需要安装 `backend/requirements.txt`，不需要 Railway 数据库、`JOB_API_TOKEN` 或 Tushare token；默认使用项目数据层配置的免费 K 线源。不要将密钥、数据库文件、临时下载行情或 `node_modules` 提交到此目录。
+输出为 JSON 数组；用它作为导入接口请求体的 `items`。脚本需要 Windows 本机安装 Node.js，并且 D 盘正式脚本与 `result/` 目录可访问；结果日期以官方 HTML 的生成日期为准。外层 `import_local_selections.py` 负责读取令牌并上传。本机不需要 Railway 数据库或项目行情源配置。不要将密钥、数据库文件、临时下载行情或 `node_modules` 提交到此目录。
 
 ## Python 脚本接口
 
