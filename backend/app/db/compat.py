@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
+import logging
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models import Base, IntradayQuote, JobRun, SelectionResult, Stock
+from app.models import Base, DailyQuote, IntradayQuote, JobRun, SelectionResult, Stock
 
 from .dao import intraday_quotes, job_runs, selection_results, stocks
 from .session import SessionLocal, engine
@@ -22,6 +23,7 @@ def _as_datetime(value: str | None) -> datetime | None:
 
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+logger = logging.getLogger(__name__)
 
 
 def _as_shanghai_naive(value: datetime | str) -> datetime:
@@ -85,6 +87,33 @@ def replace_strategy_selections(
             )
         )
         _save_selections(session, results)
+
+
+def delete_trade_date_data(trade_date: str) -> dict[str, int]:
+    """Atomically delete one Shanghai trading date without touching stock masters."""
+    target = _as_date(trade_date)
+    intraday_start = datetime.combine(target, time.min)
+    intraday_end = intraday_start + timedelta(days=1)
+    with SessionLocal.begin() as session:
+        selection_count = session.execute(
+            delete(SelectionResult).where(SelectionResult.trade_date == target)
+        ).rowcount or 0
+        daily_count = session.execute(
+            delete(DailyQuote).where(DailyQuote.trade_date == target)
+        ).rowcount or 0
+        intraday_count = session.execute(
+            delete(IntradayQuote).where(
+                IntradayQuote.trade_datetime >= intraday_start,
+                IntradayQuote.trade_datetime < intraday_end,
+            )
+        ).rowcount or 0
+    counts = {
+        "selection_results_deleted": int(selection_count),
+        "daily_quotes_deleted": int(daily_count),
+        "intraday_quotes_deleted": int(intraday_count),
+    }
+    logger.info("trade-date cleanup completed date=%s counts=%s", target.isoformat(), counts)
+    return counts
 
 
 def _selection_dict(row: SelectionResult) -> dict[str, Any]:

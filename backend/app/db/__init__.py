@@ -1,5 +1,6 @@
 from .compat import (
     init_db,
+    delete_trade_date_data,
     has_daily_quotes,
     latest_job,
     read_daily_bars,
@@ -30,6 +31,7 @@ __all__ = [
     "trade_calendar",
     "job_runs",
     "init_db",
+    "delete_trade_date_data",
     "has_daily_quotes",
     "save_daily_quotes",
     "save_intraday_quotes",

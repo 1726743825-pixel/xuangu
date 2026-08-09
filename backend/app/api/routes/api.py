@@ -36,6 +36,8 @@ from ...schemas import (
     StockDetail,
     StockPage,
     StockSummary,
+    TradeDateCleanupRequest,
+    TradeDateCleanupResult,
 )
 
 router = APIRouter(prefix="/api", tags=["API"])
@@ -256,6 +258,16 @@ def import_intraday_quotes(
     return APIResponse(data=IntradayQuoteImportResult(
         count=len(rows), start_datetime=min(timestamps), end_datetime=max(timestamps)
     ))
+
+
+@router.delete("/data/trade-date", response_model=APIResponse[TradeDateCleanupResult])
+def cleanup_trade_date_data(
+    request: TradeDateCleanupRequest,
+    _: None = Depends(_require_job_token),
+) -> APIResponse[TradeDateCleanupResult]:
+    """Delete all result/quote rows for one explicitly confirmed Shanghai date."""
+    counts = db.delete_trade_date_data(request.date.isoformat())
+    return APIResponse(data=TradeDateCleanupResult(date=request.date, **counts))
 
 
 @router.post("/quotes/sync", response_model=APIResponse[RunSelectionAccepted], status_code=status.HTTP_202_ACCEPTED)

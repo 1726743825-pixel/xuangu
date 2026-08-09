@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
@@ -409,3 +409,106 @@ def test_intraday_kline_returns_empty_without_persisted_intraday_bars():
     with TestClient(app) as client:
         response = client.get("/api/stock/301091/kline?period=30m")
     assert response.json() == {"code": 0, "data": [], "message": ""}
+
+
+def _cleanup_payload(date_value: str, **overrides):
+    payload = {
+        "date": date_value,
+        "delete_selections": True,
+        "delete_daily_quotes": True,
+        "delete_intraday_quotes": True,
+        "confirm": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _seed_trade_date_cleanup_data(code: str, date_value: str, next_date: str) -> None:
+    db.save_selections([
+        {"code": code, "name": "清理测试", "trade_date": date_value, "score": 80},
+        {"code": code, "name": "清理测试", "trade_date": next_date, "score": 81},
+    ])
+    db.save_daily_quotes([
+        {"code": code, "name": "清理测试", "trade_date": date_value,
+         "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 100},
+        {"code": code, "name": "清理测试", "trade_date": next_date,
+         "open": 11, "high": 12, "low": 10, "close": 11.5, "volume": 200},
+    ])
+    db.save_intraday_quotes([
+        {"code": code, "name": "清理测试", "interval": "30m",
+         "trade_datetime": datetime.fromisoformat(f"{date_value}T09:30:00"),
+         "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 100,
+         "amount": None, "amount_estimated": True},
+        {"code": code, "name": "清理测试", "interval": "30m",
+         "trade_datetime": datetime.fromisoformat(f"{next_date}T09:30:00"),
+         "open": 11, "high": 12, "low": 10, "close": 11.5, "volume": 200,
+         "amount": None, "amount_estimated": True},
+    ])
+
+
+def test_trade_date_cleanup_requires_token_and_all_explicit_confirmations(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    date_value = "2031-02-03"
+    with TestClient(app) as client:
+        assert client.request("DELETE", "/api/data/trade-date", json=_cleanup_payload(date_value)).status_code == 401
+        headers = {"X-Job-Token": "ci-secret"}
+        for payload in (
+            {"date": date_value},
+            _cleanup_payload(date_value, confirm=False),
+            _cleanup_payload(date_value, delete_daily_quotes=False),
+            _cleanup_payload("20310203"),
+        ):
+            assert client.request("DELETE", "/api/data/trade-date", json=payload, headers=headers).status_code == 422
+
+
+def test_trade_date_cleanup_deletes_only_the_confirmed_date_and_preserves_stocks(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    code, date_value, next_date = "300951", "2031-02-03", "2031-02-04"
+    headers = {"X-Job-Token": "ci-secret"}
+    with TestClient(app) as client:
+        _seed_trade_date_cleanup_data(code, date_value, next_date)
+        response = client.request("DELETE", "/api/data/trade-date", json=_cleanup_payload(date_value), headers=headers)
+        cleared_selections = client.get(f"/api/selections?date={date_value}")
+        retained_selections = client.get(f"/api/selections?date={next_date}")
+        daily = client.get(f"/api/stock/{code}/kline?period=daily")
+        intraday = client.get(f"/api/stock/{code}/kline?period=30m")
+        stocks = client.get("/api/stocks?size=100")
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "date": date_value,
+        "selection_results_deleted": 1,
+        "daily_quotes_deleted": 1,
+        "intraday_quotes_deleted": 1,
+    }
+    assert cleared_selections.json()["data"]["count"] == 0
+    assert retained_selections.json()["data"]["count"] == 1
+    assert daily.json()["data"] == [[next_date, 11.0, 11.5, 10.0, 12.0, 200.0]]
+    assert intraday.json()["data"] == [[f"{next_date}T09:30:00+08:00", 11.0, 11.5, 10.0, 12.0, 200.0]]
+    assert code in {item["code"] for item in stocks.json()["data"]["items"]}
+
+
+def test_trade_date_cleanup_rolls_back_all_deletes_on_failure(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    code, date_value, next_date = "300952", "2031-02-05", "2031-02-06"
+    _seed_trade_date_cleanup_data(code, date_value, next_date)
+    original_delete = db_compat.delete
+    calls = 0
+
+    def fail_second_delete(model):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("forced delete failure")
+        return original_delete(model)
+
+    monkeypatch.setattr(db_compat, "delete", fail_second_delete)
+    headers = {"X-Job-Token": "ci-secret"}
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.request("DELETE", "/api/data/trade-date", json=_cleanup_payload(date_value), headers=headers)
+        selections = client.get(f"/api/selections?date={date_value}")
+        daily = client.get(f"/api/stock/{code}/kline?period=daily")
+        intraday = client.get(f"/api/stock/{code}/kline?period=30m")
+    assert response.status_code == 500
+    assert selections.json()["data"]["count"] == 1
+    assert daily.json()["data"][0][0] == date_value
+    assert intraday.json()["data"][0][0] == f"{date_value}T09:30:00+08:00"

@@ -280,3 +280,20 @@ class IntradayQuoteImportResult(BaseModel):
     count: int
     start_datetime: datetime
     end_datetime: datetime
+
+
+class TradeDateCleanupRequest(BaseModel):
+    """A deliberately narrow, fully confirmed one-day cleanup command."""
+
+    date: date
+    delete_selections: Literal[True]
+    delete_daily_quotes: Literal[True]
+    delete_intraday_quotes: Literal[True]
+    confirm: Literal[True]
+
+
+class TradeDateCleanupResult(BaseModel):
+    date: date
+    selection_results_deleted: int
+    daily_quotes_deleted: int
+    intraday_quotes_deleted: int
