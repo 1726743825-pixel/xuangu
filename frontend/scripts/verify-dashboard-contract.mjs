@@ -16,7 +16,9 @@ assert.doesNotMatch(dashboard, /sortKey|sortDirection|onSort|StatsCards/);
 assert.doesNotMatch(dashboard, /策略信号/);
 assert.match(dashboard, /数据来源：AKShare（开源免费接口）｜本系统仅展示公开市场数据与技术指标，不构成任何投资建议。股市有风险，投资需谨慎/);
 
-for (const name of ["上证指数", "深证成指", "创业板指", "北证50", "科创50"]) assert.match(cards, new RegExp(name));
+for (const name of ["上证指数", "深证成指", "创业板指", "科创50"]) assert.match(cards, new RegExp(name));
+assert.doesNotMatch(cards, /北证50|899050/);
+assert.match(cards, /grid-cols-2 gap-3 lg:grid-cols-4/);
 assert.match(table, /选入当日价格/);
 assert.match(table, /当前价格/);
 assert.match(table, /总分/);

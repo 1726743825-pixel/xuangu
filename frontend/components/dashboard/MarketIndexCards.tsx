@@ -4,7 +4,6 @@ const INDEXES = [
   { name: "上证指数", codes: ["000001.SH", "000001"] },
   { name: "深证成指", codes: ["399001.SZ", "399001"] },
   { name: "创业板指", codes: ["399006.SZ", "399006"] },
-  { name: "北证50", codes: ["899050.BJ", "899050"] },
   { name: "科创50", codes: ["000688.SH", "000688"] },
 ] as const;
 
@@ -18,7 +17,7 @@ function findIndex(items: MarketIndexItem[], target: (typeof INDEXES)[number]) {
 
 export function MarketIndexCards({ items, loading, failed }: { items: MarketIndexItem[]; loading: boolean; failed: boolean }) {
   return (
-    <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5" aria-label="主要市场指数">
+    <section className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="主要市场指数">
       {INDEXES.map((target) => {
         const item = findIndex(items, target);
         const change = item?.change_pct;
