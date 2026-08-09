@@ -422,17 +422,110 @@ def test_official_selector_prices_only_after_old_price_hook_is_disabled(monkeypa
     assert local_import.selection_script.fill_missing_selection_prices is old_filler
 
 
-def test_refresh_existing_weekend_never_selects_or_reimports(monkeypatch, capsys):
+def _existing_items(count=10, *, priced=False):
+    rows = []
+    for index in range(count):
+        price = 20.0 + index if priced else None
+        rows.append({
+            "code": f"{600100 + index:06d}", "name": f"股票{index}",
+            "trade_date": "2026-08-09", "strategy_name": "官方策略",
+            "score": 90.0 - index, "change_pct": 10.0 + index,
+            "turnover_rate": 5.0 + index, "board_count": index % 3,
+            "industry": f"行业{index}", "reasons": [f"原因{index}"],
+            "indicators": {"官方指标": index}, "price": price,
+            "selection_price": price,
+            "selection_price_date": "2026-08-07" if priced else None,
+        })
+    return rows
+
+
+def test_refresh_backfills_all_prices_atomically_without_changing_authoritative_fields(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
+    monkeypatch.setattr(
+        local_import.selection_script, "run_selection",
+        lambda *_: pytest.fail("refresh must not run Node selection"),
+    )
+    original = _existing_items()
+    captured = {}
+
+    def filler(items):
+        assert len(items) == 10
+        return [
+            {**item, "price": 100.0 + index, "price_date": "2026-08-07", "price_source": "akshare-sina"}
+            for index, item in enumerate(items)
+        ]
+
+    def post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _Response(10)
+
+    completed, count = local_import._backfill_existing_selection_prices(
+        "2026-08-09", original, price_filler=filler, post=post,
+    )
+
+    assert count == 10 and len(completed) == 10
+    assert captured["url"].endswith("/api/selections/import")
+    assert "replace_existing" not in captured["json"]
+    assert "secret-not-to-print" not in str(captured["json"])
+    for index, (before, after) in enumerate(zip(original, captured["json"]["items"])):
+        for field in (
+            "code", "name", "trade_date", "strategy_name", "score", "change_pct",
+            "turnover_rate", "board_count", "industry", "reasons", "indicators",
+        ):
+            assert after[field] == before[field]
+        assert after["selection_price"] == 100.0 + index
+        assert after["selection_price_date"] == "2026-08-07"
+
+
+def test_refresh_keeps_existing_fixed_prices_without_filler_or_reimport():
+    original = _existing_items(priced=True)
+    completed, count = local_import._backfill_existing_selection_prices(
+        "2026-08-09", original,
+        price_filler=lambda *_: pytest.fail("fixed prices must not be recalculated"),
+        post=lambda *_args, **_kwargs: pytest.fail("second refresh must not reimport selections"),
+    )
+    assert count == 0
+    assert completed == original
+
+
+def test_refresh_price_failure_never_partially_reimports(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret")
+    original = _existing_items()
+
+    def partial_filler(items):
+        return [
+            {**item, "price": 100.0, "price_date": "2026-08-07"}
+            if index == 0 else {**item, "price": None, "price_date": None}
+            for index, item in enumerate(items)
+        ]
+
+    with pytest.raises(local_import.SelectionImportError, match="未取得有效固定选入价"):
+        local_import._backfill_existing_selection_prices(
+            "2026-08-09", original, price_filler=partial_filler,
+            post=lambda *_args, **_kwargs: pytest.fail("partial prices must never upload"),
+        )
+
+
+def test_refresh_existing_weekend_never_selects_deletes_or_replaces(monkeypatch, capsys):
     monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
     monkeypatch.setattr(local_import, "_load_existing_selection_items", lambda date_value: _items(date_value))
+    monkeypatch.setattr(
+        local_import, "_backfill_existing_selection_prices", lambda _date, items: (items, 1),
+    )
     monkeypatch.setattr(local_import, "_sync_selected_market_data", lambda *_: (120, 480, 4, 1))
-    monkeypatch.setattr(local_import, "_import_selection_run", lambda *_args, **_kwargs: pytest.fail("refresh must not select"))
+    monkeypatch.setattr(
+        local_import.selection_script, "run_selection", lambda *_: pytest.fail("refresh must not select"),
+    )
 
     assert local_import.main([
         "--refresh-existing-date", "2026-08-09", "--env-file", "unused.env",
     ]) == 0
     output = capsys.readouterr().out
-    assert "trade_date=2026-08-09" in output and "daily_quotes=120" in output
+    assert "trade_date=2026-08-09" in output and "fixed_prices=1" in output
+    assert "daily_quotes=120" in output
 
 
 def test_market_sync_reports_components_independently(monkeypatch):

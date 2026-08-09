@@ -577,6 +577,70 @@ def _load_existing_selection_items(
     return items
 
 
+def _backfill_existing_selection_prices(
+    trade_date: str,
+    items: list[dict],
+    *,
+    price_filler: Callable[..., list[dict]] = akshare_local.fill_selection_prices,
+    post: Callable[..., httpx.Response] = httpx.post,
+) -> tuple[list[dict], int]:
+    """Atomically fill only missing fixed prices, then upsert the full unchanged set."""
+    target_date = date.fromisoformat(trade_date).isoformat()
+    prepared = [dict(item) for item in items]
+    missing: list[dict] = []
+    missing_indexes: list[int] = []
+    for index, item in enumerate(prepared):
+        fixed_price = item.get("selection_price")
+        fixed_date = item.get("selection_price_date")
+        if (fixed_price is None) != (fixed_date is None):
+            raise SelectionImportError(f"{item.get('code', 'unknown')} 的固定选入价与日期不完整")
+        if fixed_price is None:
+            candidate = dict(item)
+            candidate["trade_date"] = target_date
+            candidate["price"] = None
+            candidate["price_date"] = None
+            missing.append(candidate)
+            missing_indexes.append(index)
+
+    if not missing:
+        return prepared, 0
+
+    try:
+        priced = price_filler(missing)
+    except akshare_local.AkshareDataError as exc:
+        raise SelectionImportError(f"已有选股固定价补齐失败: {exc}") from exc
+    if len(priced) != len(missing):
+        raise SelectionImportError("已有选股固定价补齐结果数量不一致，已拒绝回写")
+
+    completed = [dict(item) for item in prepared]
+    for original, filled, index in zip(missing, priced, missing_indexes):
+        original_key = (str(original.get("code")), str(original.get("strategy_name") or "默认策略"))
+        filled_key = (str(filled.get("code")), str(filled.get("strategy_name") or "默认策略"))
+        try:
+            price = float(filled["price"])
+            price_date = date.fromisoformat(str(filled["price_date"])[:10]).isoformat()
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SelectionImportError(
+                f"{original.get('code', 'unknown')} 未取得有效固定选入价，已拒绝回写"
+            ) from exc
+        if original_key != filled_key or not isfinite(price) or price <= 0 or price_date > target_date:
+            raise SelectionImportError(
+                f"{original.get('code', 'unknown')} 的固定选入价结果无效，已拒绝回写"
+            )
+        completed[index].update(
+            price=price,
+            selection_price=price,
+            price_date=price_date,
+            selection_price_date=price_date,
+            price_source=filled.get("price_source"),
+        )
+
+    # One request only after every missing price has passed validation. The API
+    # persists this request in one transaction; replace_existing remains false.
+    run = _import_selection_run(target_date, selector=lambda _date: completed, post=post)
+    return run.items, len(missing)
+
+
 def _sync_selected_market_data(trade_date: str, items: list[dict]) -> tuple[int, int, int, int]:
     errors: list[str] = []
     daily_quotes: list[dict] = []
@@ -621,12 +685,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.refresh_existing_date:
             refresh_date = date.fromisoformat(args.refresh_existing_date).isoformat()
             items = _load_existing_selection_items(refresh_date)
+            items, fixed_price_count = _backfill_existing_selection_prices(refresh_date, items)
             daily_count, intraday_count, index_count, stock_count = _sync_selected_market_data(
                 refresh_date, items
             )
             print(
                 "已有选股行情刷新成功: "
-                f"trade_date={refresh_date}, daily_quotes={daily_count}, "
+                f"trade_date={refresh_date}, fixed_prices={fixed_price_count}, daily_quotes={daily_count}, "
                 f"intraday_30m_quotes={intraday_count}, indices={index_count}, stocks={stock_count}"
             )
             return 0
