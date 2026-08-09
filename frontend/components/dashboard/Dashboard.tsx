@@ -69,7 +69,7 @@ export function Dashboard() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
+    <main className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900">
       <div className="mx-auto w-full max-w-[1480px] px-4 py-8 sm:px-6 lg:px-8">
         <header className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>

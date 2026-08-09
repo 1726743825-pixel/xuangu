@@ -14,13 +14,14 @@ export interface KlineChartProps {
   className?: string;
   loading?: boolean;
   showForecast?: boolean;
+  emptyMessage?: string;
 }
 
 type ForecastPoint = { date: string; value: number; lower: number; upper: number };
 type ForecastScenario = { points: ForecastPoint[]; support?: number; resistance?: number };
 
 function formatTurnover(value: number) {
-  return `${(value / 10_000).toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 万`;
+  return `${(value / 100_000_000).toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 亿`;
 }
 
 function nextTradingDates(lastDate: string, count: number) {
@@ -74,7 +75,7 @@ function buildForecast(rows: BackendKlineRow[]): ForecastScenario {
 }
 
 /** Candlestick chart backed exclusively by API OHLCV rows. */
-export function KlineChart({ data, height = 620, className = "", loading = false, showForecast = true }: KlineChartProps) {
+export function KlineChart({ data, height = 620, className = "", loading = false, showForecast = true, emptyMessage = "暂无 K 线数据" }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { resolvedTheme } = useTheme();
   const chartData = useMemo(() => {
@@ -104,7 +105,13 @@ export function KlineChart({ data, height = 620, className = "", loading = false
       {
         name: "历史行情", type: "candlestick", data: chartData.candles,
         itemStyle: { color: "#ef4444", color0: "#10b981", borderColor: "#ef4444", borderColor0: "#10b981" },
-        markLine: chartData.forecast.length ? { symbol: "none", label: { color: text, fontSize: 10 }, lineStyle: { type: "dashed", color: "#a78bfa", opacity: 0.65 }, data: [{ name: "支撑", yAxis: chartData.support }, { name: "压力", yAxis: chartData.resistance }] } : undefined,
+        markLine: chartData.forecast.length ? {
+          symbol: "none", label: { color: text, fontSize: 10 },
+          data: [
+            { name: "支撑", yAxis: chartData.support, lineStyle: { type: "dashed", color: "rgba(16,185,129,.75)", opacity: 0.75 } },
+            { name: "压力", yAxis: chartData.resistance, lineStyle: { type: "dashed", color: "rgba(239,68,68,.9)", opacity: 0.9 } },
+          ],
+        } : undefined,
       },
       { name: "成交额", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: chartData.turnover, barMaxWidth: 12, itemStyle: { color: "#818cf8" } },
     ];
@@ -119,9 +126,9 @@ export function KlineChart({ data, height = 620, className = "", loading = false
     const option: EChartsOption = {
       animation: false,
       backgroundColor: "transparent",
-      legend: { data: ["历史行情", "技术情景预测", "波动区间"], top: 0, right: 18, textStyle: { color: text, fontSize: 11 }, selected: { "技术情景预测": chartData.forecast.length > 0, "波动区间": chartData.forecast.length > 0 } },
+      legend: { type: "scroll", data: ["历史行情", "技术情景预测", "波动区间"], top: 0, left: 4, right: 4, textStyle: { color: text, fontSize: 11 }, selected: { "技术情景预测": chartData.forecast.length > 0, "波动区间": chartData.forecast.length > 0 } },
       tooltip: {
-        trigger: "axis", axisPointer: { type: "cross" },
+        trigger: "axis", triggerOn: "mousemove|click", confine: true, axisPointer: { type: "cross" },
         formatter: (params: unknown) => {
           const entries = Array.isArray(params) ? params as Array<{ axisValueLabel?: string; seriesName?: string; data?: unknown }> : [];
           const candle = entries.find((entry) => entry.seriesName === "历史行情" && Array.isArray(entry.data))?.data as number[] | undefined;
@@ -132,11 +139,16 @@ export function KlineChart({ data, height = 620, className = "", loading = false
           return lines.join("<br/>");
         },
       },
-      grid: [{ left: 76, right: 24, top: 42, height: "62%", containLabel: true }, { left: 76, right: 24, top: "75%", height: "15%", containLabel: true }],
+      axisPointer: { link: [{ xAxisIndex: "all" }] },
+      grid: [{ left: 76, right: 24, top: 42, height: "59%", containLabel: true }, { left: 76, right: 24, top: "72%", height: "14%", containLabel: true }],
       xAxis: [0, 1].map((index) => ({ type: "category", data: chartData.dates, boundaryGap: true, gridIndex: index, axisLine: { lineStyle: { color: grid } }, axisLabel: { show: index === 1, color: text, fontSize: 11, hideOverlap: true }, axisTick: { show: false }, splitLine: { show: false } })),
       yAxis: [
         { scale: true, gridIndex: 0, splitArea: { show: true, areaStyle: { color: isDark ? ["rgba(15,23,42,.08)", "rgba(30,41,59,.12)"] : ["rgba(248,250,252,.7)", "rgba(248,250,252,.1)"] } }, axisLabel: { color: text, fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: grid } } },
-        { scale: true, gridIndex: 1, axisLabel: { color: text, fontSize: 11, formatter: (value: number) => `${(value / 10_000).toLocaleString("zh-CN", { maximumFractionDigits: 0 })}万` }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: grid } } },
+        { scale: true, gridIndex: 1, axisLabel: { color: text, fontSize: 11, formatter: (value: number) => `${(value / 100_000_000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })}亿` }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: grid } } },
+      ],
+      dataZoom: [
+        { type: "inside", xAxisIndex: [0, 1], filterMode: "none", zoomOnMouseWheel: true, moveOnMouseMove: true, moveOnMouseWheel: true },
+        { type: "slider", xAxisIndex: [0, 1], filterMode: "none", bottom: 2, height: 16, borderColor: "transparent", fillerColor: "rgba(99,102,241,.16)", handleSize: 12, moveHandleSize: 0, brushSelect: false },
       ],
       series: series as never,
     };
@@ -147,6 +159,6 @@ export function KlineChart({ data, height = 620, className = "", loading = false
   }, [chartData, data, resolvedTheme]);
 
   if (loading) return <div style={{ height }} className={`animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800 ${className}`} />;
-  if (!data.length) return <div style={{ height }} className={`flex items-center justify-center rounded-xl bg-slate-50 text-sm text-slate-400 dark:bg-slate-950 ${className}`}>暂无 K 线数据</div>;
-  return <div ref={containerRef} style={{ height }} className={`w-full ${className}`} role="img" aria-label="股票 K 线、成交额与技术情景预测图表" />;
+  if (!data.length) return <div style={{ height }} className={`flex items-center justify-center rounded-xl bg-slate-50 px-6 text-center text-sm text-slate-400 dark:bg-slate-950 ${className}`}>{emptyMessage}</div>;
+  return <div ref={containerRef} style={{ height, touchAction: "none" }} className={`w-full ${className}`} role="img" aria-label="股票 K 线、成交额与技术情景预测图表" />;
 }
