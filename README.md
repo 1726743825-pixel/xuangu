@@ -155,6 +155,22 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 本机数据层提供 `build_selected_30m_sync_payload(items)`：它只读取官方报告已经入选的代码，腾讯 `mkline` 每只最多保留 480 根（约 60 个交易日），价格为原始分钟价、`adjustment="none"`，周末报告不会产生 bar。该 payload 只用于本机导入；选股策略不读取其中的分钟数据。
 
+### 一次性指定官方报告迁移
+
+`scripts/migrate-official-report.ps1` 仅用于经人工确认的历史数据更正；它**不会**被 `Xuangu-LocalSelectionImport` 每日任务调用。工具先以只读方式严格解析指定 HTML（不会运行 Node.js），确认报告日期与目标日期一致且恰有 10 条结果后，才请求删除一个明确日期的选股、日 K 和 30 分钟 K；清理成功后才导入这 10 条官方选股结果。解析、日期或清理任一失败时不会导入。该工具不上传任何 K 线，因此把周末报告迁移到周日目标日期时不会伪造行情。
+
+确认 Railway 已部署包含 `DELETE /api/data/trade-date` 的最新提交后，才可在国内 Windows 主机人工执行（令牌仍仅从未提交的根目录 `.env` 读取）：
+
+```powershell
+.\scripts\migrate-official-report.ps1 `
+  -DeleteTradeDate 2026-08-07 `
+  -ReportPath 'D:\Program Files\xuangu\result\选股结果2026年08月09日.html' `
+  -TargetTradeDate 2026-08-09 `
+  -ConfirmPurge
+```
+
+`-ConfirmPurge` 缺失时工具拒绝运行。不要把这条命令加入任务计划程序，也不要把报告路径或令牌写入 `.env`。
+
 ### Render / Railway 后端
 
 Render 可直接导入根目录 `render.yaml`。Blueprint 使用免费 Web Service、Dockerfile 最终 `backend` 阶段和 `/api/health` 健康检查。创建后设置 `CORS_ORIGINS` 为 Vercel 域名，并把 Render 生成的 `JOB_API_TOKEN` 同步到 GitHub Actions。Render 免费实例不提供持久磁盘，因此配置中的 `/tmp/xuangu.db` 会在重建或休眠恢复后丢失；免费方案适合演示，需长期保留结果时请选择持久磁盘或外部数据库。
