@@ -136,8 +136,8 @@ class SelectionResultDAO(CRUDBase[SelectionResult]):
         selection_price_date = values.get("selection_price_date")
         if (selection_price is None) != (selection_price_date is None):
             raise ValueError("selection_price and selection_price_date must be set together")
-        if selection_price_date is not None and selection_price_date != values["trade_date"]:
-            raise ValueError("selection_price_date must equal trade_date")
+        if selection_price_date is not None and selection_price_date > values["trade_date"]:
+            raise ValueError("selection_price_date must not be after trade_date")
         statement = sqlite_insert(SelectionResult).values(**values)
         statement = statement.on_conflict_do_update(
             index_elements=[

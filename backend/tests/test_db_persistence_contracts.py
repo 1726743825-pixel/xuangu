@@ -35,6 +35,26 @@ def test_snapshot_helpers_return_only_persisted_latest_values():
     assert rows[0]["level"] == Decimal("3600.1000")
 
 
+def test_weekend_selection_keeps_real_previous_trading_day_price_date():
+    db.init_db()
+    db.save_selections([{
+        "code": "605596", "name": "周末报告", "trade_date": "2026-08-09",
+        "strategy_name": "周末契约", "score": 88, "price": 12.34,
+        "selection_price_date": "2026-08-07",
+    }])
+    result = db.read_selection("605596", "2026-08-09")
+    assert result is not None
+    assert result["price"] == Decimal("12.3400")
+    assert result["selection_price_date"] == "2026-08-07"
+
+    with pytest.raises(ValueError, match="must not be after"):
+        db.save_selections([{
+            "code": "605595", "name": "未来价格", "trade_date": "2026-08-09",
+            "strategy_name": "周末契约", "score": 88, "price": 12.34,
+            "selection_price_date": "2026-08-10",
+        }])
+
+
 @pytest.mark.parametrize(
     "row",
     [

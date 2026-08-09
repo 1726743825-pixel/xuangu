@@ -106,8 +106,8 @@ def _save_selections(session: Session, results: list[dict[str, Any]]) -> None:
             raise ValueError("selection_price and selection_price_date must be set together")
         if selection_price is not None and selection_price < 0:
             raise ValueError("selection_price must be non-negative")
-        if selection_price_date is not None and selection_price_date != trade_date:
-            raise ValueError("selection_price_date must equal trade_date")
+        if selection_price_date is not None and selection_price_date > trade_date:
+            raise ValueError("selection_price_date must not be after trade_date")
         stocks.upsert(
             session,
             values={

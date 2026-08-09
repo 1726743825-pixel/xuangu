@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -133,7 +134,8 @@ def test_fixed_selection_price_and_latest_snapshots_are_idempotent():
     selection_dao = SelectionResultDAO()
     stock_snapshot_dao = StockQuoteSnapshotDAO()
     market_snapshot_dao = MarketSnapshotDAO()
-    trade_date = date(2026, 8, 8)
+    trade_date = date(2026, 8, 9)
+    price_date = date(2026, 8, 7)
     newest = datetime(2026, 8, 8, 15, 1)
 
     with Session(engine) as session:
@@ -141,7 +143,7 @@ def test_fixed_selection_price_and_latest_snapshots_are_idempotent():
         base_selection = {
             "stock_code": "600000", "trade_date": trade_date, "strategy_name": "固定价测试",
             "signals": {"price": 10.2}, "score": 80,
-            "selection_price": Decimal("10.20"), "selection_price_date": trade_date,
+            "selection_price": Decimal("10.20"), "selection_price_date": price_date,
         }
         selection_dao.upsert(session, values=base_selection)
         selection_dao.upsert(
@@ -151,7 +153,16 @@ def test_fixed_selection_price_and_latest_snapshots_are_idempotent():
         selection = selection_dao.latest_for_stock(session, "600000", trade_date)
         assert selection is not None
         assert selection.selection_price == Decimal("10.3000")
-        assert selection.selection_price_date == trade_date
+        assert selection.selection_price_date == price_date
+
+        with pytest.raises(ValueError, match="must not be after"):
+            selection_dao.upsert(
+                session,
+                values={
+                    **base_selection,
+                    "selection_price_date": date(2026, 8, 10),
+                },
+            )
 
         stock_snapshot_dao.upsert(session, values={
             "stock_code": "600000", "price": Decimal("11.00"),
