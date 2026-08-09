@@ -41,7 +41,7 @@ function pctChange(rows: BackendKlineRow[], price: number | null | undefined) {
 function formatNumber(value: number | null | undefined, digits = 2) { return value == null ? "—" : value.toFixed(digits); }
 
 export default function StockDetailPage({ params }: { params: { code: string } }) {
-  const code = params.code.toUpperCase(); const [period, setPeriod] = useState<Period>("30m"); const searchParams = useSearchParams();
+  const code = params.code.toUpperCase(); const [period, setPeriod] = useState<Period>("daily"); const searchParams = useSearchParams();
   const selectionDate = searchParams.get("date"); const selectionStrategy = searchParams.get("strategy");
   const hasSelectionContext = Boolean(selectionDate && /^\d{4}-\d{2}-\d{2}$/.test(selectionDate) && selectionStrategy);
   const detail = useSWR<StockDetail>(apiUrl(`/api/stock/${encodeURIComponent(code)}/detail`), fetcher, { revalidateOnFocus: false });

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import "./verify-kline-option.mjs";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const dashboard = read("components/dashboard/Dashboard.tsx");
@@ -29,6 +30,7 @@ assert.match(table, /table-fixed/);
 assert.match(table, /<colgroup>/);
 
 assert.match(detail, /\[\{ value: "30m", label: "30分钟" \}, \{ value: "daily", label: "日K" \}, \{ value: "weekly", label: "周K" \}\]/);
+assert.match(detail, /useState<Period>\("daily"\)/);
 assert.match(detail, /row\.length !== 6/);
 assert.match(detail, /typeof item === "number" && Number\.isFinite\(item\)/);
 assert.doesNotMatch(detail, /\.map\(Number\)/);
