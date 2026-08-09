@@ -1,3 +1,5 @@
+from datetime import date, timedelta
+
 from fastapi.testclient import TestClient
 
 from app import db
@@ -90,6 +92,71 @@ def test_selection_import_persists_and_overwrites_same_strategy(monkeypatch):
     item = selections.json()["data"]["items"][0]
     assert item["score"] == 88.0
     assert item["reasons"] == ["本地更新"]
+
+
+def test_selection_import_preserves_local_display_fields_and_js_aliases(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    payload = _import_payload(
+        trade_date="2030-02-01",
+        items=[{
+            "code": "300701", "name": "工大高科", "score": 92,
+            "price": 18.65, "changePercent": 4.21, "industry": "软件开发",
+            "turnoverRate": 12.8, "continuousBoard": 2,
+            "strategy_name": "超短线技术共振", "reasons": ["量价共振"],
+        }],
+    )
+    with TestClient(app) as client:
+        response = client.post("/api/selections/import", json=payload, headers=headers)
+        selections = client.get("/api/selections?date=2030-02-01&strategy=超短线技术共振")
+    assert response.status_code == 200
+    assert selections.status_code == 200
+    item = selections.json()["data"]["items"][0]
+    assert item == {
+        "code": "300701", "name": "工大高科", "trade_date": "2030-02-01",
+        "price": 18.65, "change_pct": 4.21, "score": 92.0,
+        "strategy_name": "超短线技术共振", "industry": "软件开发",
+        "turnover_rate": 12.8, "board_count": 2,
+        "reasons": ["量价共振"], "indicators": {},
+    }
+
+
+def test_selection_performance_uses_real_kline_positions_and_reports_missing_future_data(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    code, strategy, selection_date = "300702", "超短线技术共振", date(2030, 3, 1)
+    with TestClient(app) as client:
+        imported = client.post("/api/selections/import", json=_import_payload(
+            trade_date=selection_date.isoformat(),
+            items=[_selection_item(code, 88, strategy)],
+        ), headers=headers)
+        assert imported.status_code == 200
+        db.save_daily_quotes([
+            {
+                "code": code, "name": f"测试{code}",
+                "trade_date": (selection_date + timedelta(days=index)).isoformat(),
+                "open": close, "high": close, "low": close, "close": close, "volume": 1000,
+            }
+            for index, close in enumerate((10, 11, 9, 12))
+        ])
+        response = client.get(
+            f"/api/selections/{code}/performance?date={selection_date.isoformat()}&strategy={strategy}"
+        )
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["base_close"] == 10.0
+    periods = {item["label"]: item for item in payload["periods"]}
+    assert periods["1d"] == {
+        "label": "1d", "trading_days": 1, "target_date": "2030-03-02",
+        "close": 11.0, "return_pct": 10.0, "status": "ok",
+    }
+    assert periods["3d"]["return_pct"] == 20.0
+    assert periods["5d"] == {
+        "label": "5d", "trading_days": 5, "target_date": None,
+        "close": None, "return_pct": None, "status": "暂无数据",
+    }
+    assert periods["3m"]["trading_days"] == 60
+    assert periods["3m"]["status"] == "暂无数据"
 
 
 def _selection_item(code: str, score: float, strategy_name: str = "默认策略") -> dict:

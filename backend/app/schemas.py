@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from math import isfinite
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 DataT = TypeVar("DataT")
@@ -27,6 +27,8 @@ class SelectionResult(BaseModel):
     score: float | None = None
     strategy_name: str = "默认策略"
     industry: str | None = None
+    turnover_rate: float | None = None
+    board_count: int | None = None
     reasons: list[str] = Field(default_factory=list)
     indicators: dict[str, Any] = Field(default_factory=dict)
 
@@ -116,13 +118,17 @@ class RunSelectionAccepted(BaseModel):
 class SelectionImportItem(BaseModel):
     """One locally generated selection result accepted by the import endpoint."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     code: str = Field(min_length=1, max_length=16)
     name: str = Field(min_length=1, max_length=128)
     score: float
     price: float | None = None
-    change_pct: float | None = None
+    change_pct: float | None = Field(default=None, validation_alias=AliasChoices("change_pct", "changePercent"))
     strategy_name: str = Field(default="默认策略", min_length=1, max_length=128)
     industry: str | None = Field(default=None, max_length=128)
+    turnover_rate: float | None = Field(default=None, validation_alias=AliasChoices("turnover_rate", "turnoverRate"))
+    board_count: int | None = Field(default=None, validation_alias=AliasChoices("board_count", "continuousBoard"))
     reasons: list[str] = Field(default_factory=list)
     indicators: dict[str, Any] = Field(default_factory=dict)
 
@@ -131,6 +137,27 @@ class SelectionImportItem(BaseModel):
     def score_must_be_finite_and_in_range(cls, value: float) -> float:
         if not isfinite(value) or not 0 <= value <= 100:
             raise ValueError("score must be a finite number between 0 and 100")
+        return value
+
+    @field_validator("price", "change_pct", "turnover_rate")
+    @classmethod
+    def optional_numbers_must_be_finite(cls, value: float | None) -> float | None:
+        if value is not None and not isfinite(value):
+            raise ValueError("selection numeric fields must be finite")
+        return value
+
+    @field_validator("price", "turnover_rate")
+    @classmethod
+    def price_and_turnover_must_not_be_negative(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("price and turnover_rate must not be negative")
+        return value
+
+    @field_validator("board_count")
+    @classmethod
+    def board_count_must_not_be_negative(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("board_count must not be negative")
         return value
 
 
@@ -149,6 +176,24 @@ class SelectionImportRequest(BaseModel):
 class SelectionImportResult(BaseModel):
     date: date
     count: int
+
+
+class HoldingPeriodReturn(BaseModel):
+    label: str
+    trading_days: int
+    target_date: date | None = None
+    close: float | None = None
+    return_pct: float | None = None
+    status: Literal["ok", "暂无数据"]
+
+
+class SelectionPerformance(BaseModel):
+    code: str
+    name: str
+    trade_date: date
+    strategy_name: str
+    base_close: float | None = None
+    periods: list[HoldingPeriodReturn]
 
 
 class QuoteImportItem(BaseModel):

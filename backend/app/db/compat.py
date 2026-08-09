@@ -43,11 +43,13 @@ def _save_selections(session: Session, results: list[dict[str, Any]]) -> None:
                 "stock_code": item.get("stock_code") or item["code"],
                 "trade_date": _as_date(item["trade_date"]),
                 "strategy_name": item.get("strategy_name") or "默认策略",
-                "signals": item.get("signals") or {
-                    "reasons": item.get("reasons", []),
-                    "indicators": item.get("indicators", {}),
-                    "price": item.get("price"),
-                    "change_pct": item.get("change_pct"),
+                    "signals": item.get("signals") or {
+                        "reasons": item.get("reasons", []),
+                        "indicators": item.get("indicators", {}),
+                        "price": item.get("price"),
+                        "change_pct": item.get("change_pct"),
+                        "turnover_rate": item.get("turnover_rate"),
+                        "board_count": item.get("board_count"),
                 },
                 "score": item.get("score"),
             },
@@ -85,6 +87,8 @@ def _selection_dict(row: SelectionResult) -> dict[str, Any]:
         "score": row.score,
         "strategy_name": row.strategy_name,
         "industry": row.stock.industry,
+        "turnover_rate": signals.get("turnover_rate"),
+        "board_count": signals.get("board_count"),
         "reasons": signals.get("reasons", []),
         "indicators": signals.get("indicators", {}),
     }

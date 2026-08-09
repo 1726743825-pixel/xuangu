@@ -27,7 +27,9 @@ from ...schemas import (
     SelectionImportRequest,
     SelectionImportResult,
     SelectionPage,
+    SelectionPerformance,
     SelectionResult,
+    HoldingPeriodReturn,
     StockDetail,
     StockPage,
     StockSummary,
@@ -47,6 +49,8 @@ def _selection_schema(row: SelectionResultModel) -> SelectionResult:
         score=row.score,
         strategy_name=row.strategy_name,
         industry=row.stock.industry,
+        turnover_rate=signals.get("turnover_rate"),
+        board_count=signals.get("board_count"),
         reasons=signals.get("reasons", []),
         indicators=signals.get("indicators", {}),
     )
@@ -87,6 +91,65 @@ def list_selections(
     rows = session.scalars(statement.order_by(SelectionResultModel.score.desc())).unique().all()
     return APIResponse(data=SelectionPage(
         date=target, strategy=strategy, items=[_selection_schema(row) for row in rows], count=len(rows)
+    ))
+
+
+_PERFORMANCE_PERIODS = (("1d", 1), ("3d", 3), ("5d", 5), ("10d", 10), ("25d", 25), ("3m", 60))
+
+
+@router.get("/selections/{code}/performance", response_model=APIResponse[SelectionPerformance])
+def selection_performance(
+    code: str,
+    trade_date: date = Query(..., alias="date"),
+    strategy: str = Query(..., min_length=1, max_length=128),
+    session: Session = Depends(get_db),
+) -> APIResponse[SelectionPerformance]:
+    """Calculate forward returns from persisted daily closes, never simulated quotes.
+
+    ``3m`` is defined as 60 subsequent persisted trading sessions.
+    """
+    selection = session.scalar(
+        select(SelectionResultModel)
+        .join(Stock)
+        .where(
+            SelectionResultModel.stock_code == code,
+            SelectionResultModel.trade_date == trade_date,
+            SelectionResultModel.strategy_name == strategy,
+        )
+    )
+    if selection is None:
+        raise HTTPException(status_code=404, detail="未找到对应入选记录")
+
+    quotes = session.scalars(
+        select(DailyQuote)
+        .where(DailyQuote.stock_code == code, DailyQuote.trade_date >= trade_date)
+        .order_by(DailyQuote.trade_date)
+        .limit(61)
+    ).all()
+    base = quotes[0] if quotes and quotes[0].trade_date == trade_date else None
+    base_close = float(base.close) if base and base.close is not None else None
+    periods: list[HoldingPeriodReturn] = []
+    for label, trading_days in _PERFORMANCE_PERIODS:
+        target = quotes[trading_days] if base_close is not None and len(quotes) > trading_days else None
+        if target is None or target.close is None:
+            periods.append(HoldingPeriodReturn(label=label, trading_days=trading_days, status="暂无数据"))
+            continue
+        target_close = float(target.close)
+        periods.append(HoldingPeriodReturn(
+            label=label,
+            trading_days=trading_days,
+            target_date=target.trade_date,
+            close=target_close,
+            return_pct=round((target_close / base_close - 1) * 100, 4),
+            status="ok",
+        ))
+    return APIResponse(data=SelectionPerformance(
+        code=code,
+        name=selection.stock.name,
+        trade_date=trade_date,
+        strategy_name=strategy,
+        base_close=base_close,
+        periods=periods,
     ))
 
 

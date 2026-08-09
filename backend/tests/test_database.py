@@ -67,12 +67,15 @@ def test_table_daos_create_upsert_and_query():
                 "stock_code": "600000",
                 "trade_date": trade_date,
                 "strategy_name": "测试策略",
-                "signals": {"reasons": ["放量"]},
+                "signals": {"reasons": ["放量"], "turnover_rate": 8.5, "board_count": 2},
                 "score": 88.5,
             },
         )
         calendar_dao.upsert(session, values={"trade_date": trade_date, "is_open": True})
 
         assert quote_dao.get_by_stock_date(session, "600000", trade_date).close == Decimal("10.5000")
-        assert selection_dao.latest_for_stock(session, "600000", trade_date).score == 88.5
+        selection = selection_dao.latest_for_stock(session, "600000", trade_date)
+        assert selection.score == 88.5
+        assert selection.signals["turnover_rate"] == 8.5
+        assert selection.signals["board_count"] == 2
         assert calendar_dao.is_open(session, trade_date)
