@@ -23,10 +23,6 @@ INDEX_SYMBOLS = {
     "sh000001": "上证指数",
     "sz399001": "深证成指",
     "sz399006": "创业板指",
-    # Sina's all-index snapshot does not currently contain this symbol.  It is
-    # retained in the fixed dashboard contract and returned as unavailable,
-    # never substituted with another index.
-    "bj899050": "北证50",
     "sh000688": "科创50",
 }
 
@@ -198,10 +194,10 @@ def fetch_30m_bars(
     return bars[-limit:]
 
 
-def fetch_five_indices(
+def fetch_market_indices(
     *, akshare_module: Any | None = None, observed_at: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch the five dashboard indices through AKShare's Sina adapter."""
+    """Fetch the four supported dashboard indices through AKShare/Sina."""
     ak = akshare_module or _load_akshare()
     frame = _call("stock_zh_index_spot_sina", ak.stock_zh_index_spot_sina)
     rows = {str(row.get("代码", "")).lower(): row for row in _records(frame)}
@@ -234,6 +230,15 @@ def fetch_five_indices(
             "source": AKSHARE_SOURCE,
         })
     return result
+
+
+def fetch_five_indices(
+    *, akshare_module: Any | None = None, observed_at: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Deprecated compatibility name; returns the same four-index contract."""
+    return fetch_market_indices(
+        akshare_module=akshare_module, observed_at=observed_at,
+    )
 
 
 def fetch_selected_spot(
@@ -309,6 +314,7 @@ def fill_selection_prices(
 
 __all__ = [
     "AKSHARE_SOURCE", "INDEX_SYMBOLS", "AkshareDataError", "fetch_30m_bars",
-    "fetch_daily_bars", "fetch_five_indices", "fetch_selected_spot",
+    "fetch_daily_bars", "fetch_five_indices", "fetch_market_indices",
+    "fetch_selected_spot",
     "fill_selection_prices", "validate_ohlc",
 ]

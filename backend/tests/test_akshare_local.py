@@ -83,7 +83,7 @@ def test_existing_tencent_parser_rejects_the_observed_301080_corrupt_shape():
         market_data._parse_tencent_kline("301080", "day", payload)
 
 
-def test_five_index_mapping_and_weekend_observation_semantics():
+def test_market_index_mapping_and_weekend_observation_semantics():
     frame = pd.DataFrame([
         {"代码": "sz399006", "名称": "创业板指", "最新价": 3563.116, "涨跌额": 47.556, "涨跌幅": 1.353},
         {"代码": "sh000688", "名称": "科创50", "最新价": 1744.0236, "涨跌额": 42.732, "涨跌幅": 2.512},
@@ -92,26 +92,26 @@ def test_five_index_mapping_and_weekend_observation_semantics():
     ])
     ak = SimpleNamespace(stock_zh_index_spot_sina=lambda: frame)
 
-    rows = akshare_local.fetch_five_indices(
+    rows = akshare_local.fetch_market_indices(
         akshare_module=ak,
         observed_at=datetime(2026, 8, 9, 18, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
 
     assert [row["symbol"] for row in rows] == [
-        "000001.SH", "399001.SZ", "399006.SZ", "899050.BJ", "000688.SH",
+        "000001.SH", "399001.SZ", "399006.SZ", "000688.SH",
     ]
     assert all(row["source"] == "akshare-sina" for row in rows)
     assert all(row["price_date"] is None for row in rows)
     assert rows[0]["observed_at"] == "2026-08-09T18:00:00+08:00"
-    north = next(row for row in rows if row["code"] == "899050")
-    assert north == {
-        "symbol": "899050.BJ", "provider_symbol": "bj899050",
-        "code": "899050", "name": "北证50",
-        "price": None, "change": None, "change_pct": None,
-        "observed_at": "2026-08-09T18:00:00+08:00", "price_date": None,
-        "available": False, "source": "akshare-sina",
-    }
+    assert len(rows) == 4
     assert not any(row["name"] == "沪深300" for row in rows)
+
+    compatibility_rows = akshare_local.fetch_five_indices(
+        akshare_module=ak,
+        observed_at=datetime(2026, 8, 9, 18, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    assert compatibility_rows == rows
+    assert len(compatibility_rows) == 4
 
 
 def test_selected_spot_filters_codes_but_does_not_invent_price_date():
