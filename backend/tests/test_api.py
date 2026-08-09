@@ -21,8 +21,7 @@ def _market_snapshot_payload(
 ):
     definitions = [
         ("上证指数", "000001.SH"), ("深证成指", "399001.SZ"),
-        ("创业板指", "399006.SZ"), ("北证50", "899050.BJ"),
-        ("科创50", "000688.SH"),
+        ("创业板指", "399006.SZ"), ("科创50", "000688.SH"),
     ]
     return {
         "indices": [
@@ -37,15 +36,14 @@ def _market_snapshot_payload(
     }
 
 
-def test_market_indices_always_returns_fixed_five_in_order():
+def test_market_indices_always_returns_fixed_four_in_order():
     with TestClient(app) as client:
         response = client.get("/api/market/indices")
     assert response.status_code == 200
     items = response.json()["data"]["items"]
     assert [(item["name"], item["code"]) for item in items] == [
         ("上证指数", "000001.SH"), ("深证成指", "399001.SZ"),
-        ("创业板指", "399006.SZ"), ("北证50", "899050.BJ"),
-        ("科创50", "000688.SH"),
+        ("创业板指", "399006.SZ"), ("科创50", "000688.SH"),
     ]
     assert all(item["price"] is None and item["as_of"] is None for item in items)
 
@@ -69,7 +67,7 @@ def test_market_snapshot_import_requires_token_and_strict_akshare_contract(monke
         ).status_code == 422
 
 
-def test_unavailable_north_index_package_succeeds_without_overwriting_latest(monkeypatch):
+def test_unavailable_index_package_succeeds_without_overwriting_latest(monkeypatch):
     monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
     headers = {"X-Job-Token": "ci-secret"}
     with TestClient(app) as client:
@@ -80,15 +78,15 @@ def test_unavailable_north_index_package_succeeds_without_overwriting_latest(mon
         unavailable = _market_snapshot_payload(
             as_of="2026-08-08T12:20:00+08:00", index_price=5000, stock_code="300971"
         )
-        north = unavailable["indices"][3]
-        north.update(available=False, price=None, change_pct=None, observed_at=None)
+        unavailable_index = unavailable["indices"][3]
+        unavailable_index.update(available=False, price=None, change_pct=None, observed_at=None)
         response = client.post("/api/market/snapshots/import", json=unavailable, headers=headers)
         items = client.get("/api/market/indices").json()["data"]["items"]
     assert response.status_code == 200
-    assert response.json()["data"]["indices"] == 4
-    stored_north = next(item for item in items if item["code"] == "899050.BJ")
-    assert stored_north["price"] == 3003.0
-    assert stored_north["as_of"] == "2026-08-08T12:10:00+08:00"
+    assert response.json()["data"]["indices"] == 3
+    stored_index = next(item for item in items if item["code"] == "000688.SH")
+    assert stored_index["price"] == 3003.0
+    assert stored_index["as_of"] == "2026-08-08T12:10:00+08:00"
 
 
 def test_selection_fixed_price_and_current_snapshot_are_not_mixed_and_stale_is_ignored(monkeypatch):

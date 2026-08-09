@@ -15,14 +15,12 @@ MARKET_INDEX_DEFINITIONS = (
     ("上证指数", "000001.SH"),
     ("深证成指", "399001.SZ"),
     ("创业板指", "399006.SZ"),
-    ("北证50", "899050.BJ"),
     ("科创50", "000688.SH"),
 )
 _MARKET_INDEX_ALIASES = {
     "000001.SH": "000001.SH", "000001": "000001.SH", "sh000001": "000001.SH",
     "399001.SZ": "399001.SZ", "399001": "399001.SZ", "sz399001": "399001.SZ",
     "399006.SZ": "399006.SZ", "399006": "399006.SZ", "sz399006": "399006.SZ",
-    "899050.BJ": "899050.BJ", "899050": "899050.BJ", "bj899050": "899050.BJ",
     "000688.SH": "000688.SH", "000688": "000688.SH", "sh000688": "000688.SH",
 }
 _MARKET_INDEX_NAMES = {code: name for name, code in MARKET_INDEX_DEFINITIONS}
@@ -311,14 +309,14 @@ class StockSnapshotImportItem(BaseModel):
 
 
 class MarketSnapshotImportRequest(BaseModel):
-    indices: list[MarketIndexSnapshotImportItem] = Field(min_length=5, max_length=5)
+    indices: list[MarketIndexSnapshotImportItem] = Field(min_length=4, max_length=4)
     stocks: list[StockSnapshotImportItem] = Field(default_factory=list, max_length=5000)
 
     @model_validator(mode="after")
-    def require_all_five_indices_once(self) -> "MarketSnapshotImportRequest":
+    def require_all_four_indices_once(self) -> "MarketSnapshotImportRequest":
         codes = [item.code for item in self.indices]
         expected = {code for _, code in MARKET_INDEX_DEFINITIONS}
-        if len(set(codes)) != 5 or set(codes) != expected:
+        if len(set(codes)) != 4 or set(codes) != expected:
             raise ValueError("indices must contain each fixed market index exactly once")
         return self
 

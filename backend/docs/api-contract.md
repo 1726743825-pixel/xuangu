@@ -75,7 +75,7 @@
 | `/api/selections?date=YYYY-MM-DD&strategy=` | GET | `data: { "date", "strategy", "items", "count" }` |
 | `/api/market/indices` | GET | `data: { "items": [{ "name", "code", "price", "change_pct", "as_of" }] }` |
 | `/api/selections/run` | POST | 请求体 `{ "date": "YYYY-MM-DD" }`（可省略）；202，`data.status = "accepted"` |
-| `/api/market/snapshots/import` | POST | 导入五指数和入选股票 AKShare 快照；需 `X-Job-Token` |
+| `/api/market/snapshots/import` | POST | 导入四指数和入选股票 AKShare 快照；需 `X-Job-Token` |
 | `/api/quotes/import` | POST | 导入真实日 K；需 `X-Job-Token` |
 | `/api/quotes/intraday/import` | POST | 导入真实 30 分钟 K；需 `X-Job-Token` |
 | `/api/stock/{code}/detail` | GET | `data: StockDetail`；无股票为 404 |
@@ -106,9 +106,9 @@
 
 ## 市场快照 API
 
-`GET /api/market/indices` 始终按上证指数 `000001.SH`、深证成指 `399001.SZ`、创业板指 `399006.SZ`、北证50 `899050.BJ`、科创50 `000688.SH` 的固定顺序返回五项。某指数从未有有效快照时仍保留该项，`price`、`change_pct`、`as_of` 为 `null`。
+`GET /api/market/indices` 始终按上证指数 `000001.SH`、深证成指 `399001.SZ`、创业板指 `399006.SZ`、科创50 `000688.SH` 的固定顺序返回四项。北证50/`899050.BJ` 不属于该接口契约。某指数从未有有效快照时仍保留该项，`price`、`change_pct`、`as_of` 为 `null`。
 
-`POST /api/market/snapshots/import` 的 `indices` 必须恰好包含上述五项各一次，每项必须显式提供 `available`：
+`POST /api/market/snapshots/import` 的 `indices` 必须恰好包含上述四项各一次，每项必须显式提供 `available`：
 
 - `available: true` 时，`price` 必须为有限正数，`change_pct` 必须为有限数，`as_of` 必须为 ISO 8601 时间。
 - `available: false` 时，三字段允许为 `null`；该项不入库、不清除已有值。若已有快照，GET 继续返回最近已知值及其原 `as_of`。
