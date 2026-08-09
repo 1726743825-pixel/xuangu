@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
@@ -45,5 +45,6 @@ class IntradayQuote(TimestampMixin, Base):
     close: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
     volume: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
     amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
+    amount_estimated: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     stock: Mapped["Stock"] = relationship(back_populates="intraday_quotes")

@@ -31,5 +31,5 @@ def test_alembic_upgrade_creates_intraday_quotes_for_sqlite(tmp_path: Path) -> N
         index["name"] for index in inspector.get_indexes("intraday_quotes")
     }
     assert {
-        "stock_code", "interval", "trade_datetime", "open", "high", "low", "close", "volume", "amount",
+        "stock_code", "interval", "trade_datetime", "open", "high", "low", "close", "volume", "amount", "amount_estimated",
     } <= {column["name"] for column in inspector.get_columns("intraday_quotes")}

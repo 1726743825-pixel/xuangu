@@ -80,7 +80,7 @@ class IntradayQuoteDAO(CRUDBase[IntradayQuote]):
 
     def upsert(self, session: Session, *, values: dict[str, Any], commit: bool = True) -> IntradayQuote:
         statement = sqlite_insert(IntradayQuote).values(**values)
-        mutable_fields = ("open", "high", "low", "close", "volume", "amount")
+        mutable_fields = ("open", "high", "low", "close", "volume", "amount", "amount_estimated")
         statement = statement.on_conflict_do_update(
             index_elements=[
                 IntradayQuote.stock_code,

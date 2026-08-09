@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from math import isfinite
 from typing import Any, Generic, Literal, TypeVar
+from zoneinfo import ZoneInfo
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -230,3 +231,52 @@ class QuoteImportResult(BaseModel):
     count: int
     start_date: date
     end_date: date
+
+
+class IntradayQuoteImportItem(BaseModel):
+    """A real 30-minute OHLCV bar, normalised to Asia/Shanghai."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    stock_code: str = Field(pattern=r"^\d{6}$", validation_alias=AliasChoices("stock_code", "code"))
+    stock_name: str | None = Field(default=None, min_length=1, max_length=128, validation_alias=AliasChoices("stock_name", "name"))
+    interval: Literal["30m"]
+    trade_datetime: datetime = Field(validation_alias=AliasChoices("trade_datetime", "datetime"))
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    amount: float | None = None
+    amount_estimated: bool = Field(validation_alias=AliasChoices("amount_estimated", "estimated"))
+
+    @field_validator("trade_datetime")
+    @classmethod
+    def normalise_datetime_to_shanghai(cls, value: datetime) -> datetime:
+        shanghai = ZoneInfo("Asia/Shanghai")
+        if value.tzinfo is None:
+            return value.replace(tzinfo=shanghai)
+        return value.astimezone(shanghai)
+
+    @field_validator("open", "high", "low", "close", "volume", "amount")
+    @classmethod
+    def values_must_be_finite_and_non_negative(cls, value: float | None) -> float | None:
+        if value is not None and (not isfinite(value) or value < 0):
+            raise ValueError("OHLCV and amount values must be finite and non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def high_must_not_be_less_than_low(self) -> "IntradayQuoteImportItem":
+        if self.high < self.low:
+            raise ValueError("high must be greater than or equal to low")
+        return self
+
+
+class IntradayQuoteImportRequest(BaseModel):
+    quotes: list[IntradayQuoteImportItem] = Field(min_length=1, max_length=5000)
+
+
+class IntradayQuoteImportResult(BaseModel):
+    count: int
+    start_datetime: datetime
+    end_datetime: datetime

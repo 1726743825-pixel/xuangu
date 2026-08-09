@@ -335,3 +335,77 @@ def test_quote_import_persists_echarts_kline_and_overwrites_duplicate(monkeypatc
         kline = client.get("/api/stock/301080/kline?period=daily")
     assert kline.status_code == 200
     assert kline.json()["data"] == [["2026-08-07", 11.0, 11.8, 10.5, 12.0, 234567.0]]
+
+
+def _intraday_import_payload(**overrides):
+    payload = {
+        "quotes": [{
+            "code": "301090", "name": "华润材料", "interval": "30m",
+            "datetime": "2026-08-07T09:30:00+08:00",
+            "open": 10.1, "high": 10.8, "low": 10.0, "close": 10.5,
+            "volume": 123456, "amount": None, "estimated": True,
+        }],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_intraday_quote_import_requires_configured_token(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    with TestClient(app) as client:
+        response = client.post("/api/quotes/intraday/import", json=_intraday_import_payload())
+    assert response.status_code == 401
+
+
+def test_intraday_quote_import_validates_contract_and_unknown_stock_name(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    invalid_bars = [
+        {**_intraday_import_payload()["quotes"][0], "interval": "15m"},
+        {**_intraday_import_payload()["quotes"][0], "code": "30109"},
+        {**_intraday_import_payload()["quotes"][0], "high": 9, "low": 10},
+        {key: value for key, value in _intraday_import_payload()["quotes"][0].items() if key != "estimated"},
+    ]
+    with TestClient(app) as client:
+        assert client.post("/api/quotes/intraday/import", json={"quotes": []}, headers=headers).status_code == 422
+        for bar in invalid_bars:
+            assert client.post("/api/quotes/intraday/import", json={"quotes": [bar]}, headers=headers).status_code == 422
+        nameless = {key: value for key, value in _intraday_import_payload()["quotes"][0].items() if key != "name"}
+        assert client.post("/api/quotes/intraday/import", json={"quotes": [nameless]}, headers=headers).status_code == 422
+
+
+def test_intraday_quote_import_upserts_normalises_timezone_and_keeps_daily_kline(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    first = _intraday_import_payload()
+    replacement = _intraday_import_payload(quotes=[{
+        "stock_code": "301090", "interval": "30m", "datetime": "2026-08-07T01:30:00Z",
+        "open": 10.2, "high": 11.0, "low": 10.1, "close": 10.9,
+        "volume": 234567, "amount": 2500000, "amount_estimated": False,
+    }])
+    with TestClient(app) as client:
+        assert client.post("/api/quotes/intraday/import", json=first, headers=headers).status_code == 200
+        second = client.post("/api/quotes/intraday/import", json=replacement, headers=headers)
+        intraday = client.get("/api/stock/301090/kline?period=30m")
+        daily = client.get("/api/stock/301090/kline?period=daily")
+    assert second.status_code == 200
+    assert second.json()["data"] == {
+        "count": 1,
+        "start_datetime": "2026-08-07T09:30:00+08:00",
+        "end_datetime": "2026-08-07T09:30:00+08:00",
+    }
+    assert intraday.json() == {
+        "code": 0,
+        "data": [["2026-08-07T09:30:00+08:00", 10.2, 10.9, 10.1, 11.0, 234567.0]],
+        "message": "",
+    }
+    assert daily.json() == {"code": 0, "data": [], "message": ""}
+
+
+def test_intraday_kline_returns_empty_without_persisted_intraday_bars():
+    db.save_selections([{
+        "code": "301091", "name": "无分钟线股票", "trade_date": "2030-01-01", "score": 80,
+    }])
+    with TestClient(app) as client:
+        response = client.get("/api/stock/301091/kline?period=30m")
+    assert response.json() == {"code": 0, "data": [], "message": ""}

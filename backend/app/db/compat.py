@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models import Base, JobRun, SelectionResult, Stock
+from app.models import Base, IntradayQuote, JobRun, SelectionResult, Stock
 
-from .dao import job_runs, selection_results, stocks
+from .dao import intraday_quotes, job_runs, selection_results, stocks
 from .session import SessionLocal, engine
 
 
@@ -18,6 +19,16 @@ def _as_date(value: str) -> date:
 
 def _as_datetime(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
+
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _as_shanghai_naive(value: datetime | str) -> datetime:
+    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone(_SHANGHAI).replace(tzinfo=None)
 
 
 def init_db() -> None:
@@ -197,6 +208,36 @@ def save_daily_quotes(rows: list[dict[str, Any]]) -> int:
                     "open": row["open"], "high": row["high"], "low": row["low"],
                     "close": row["close"], "volume": row.get("volume"),
                     "amount": row.get("amount"),
+                },
+                commit=False,
+            )
+        return len(rows)
+
+
+def save_intraday_quotes(rows: list[dict[str, Any]]) -> int:
+    """Persist local, real intraday bars in SQLite's Asia/Shanghai-naive form."""
+    with SessionLocal.begin() as session:
+        for row in rows:
+            stocks.upsert(
+                session,
+                values={
+                    "code": row["code"],
+                    "name": row["name"],
+                    "industry": row.get("industry"),
+                    "is_st": bool(row.get("is_st", False)),
+                },
+                commit=False,
+            )
+            intraday_quotes.upsert(
+                session,
+                values={
+                    "stock_code": row["code"],
+                    "interval": row["interval"],
+                    "trade_datetime": _as_shanghai_naive(row["trade_datetime"]),
+                    "open": row["open"], "high": row["high"], "low": row["low"],
+                    "close": row["close"], "volume": row["volume"],
+                    "amount": row.get("amount"),
+                    "amount_estimated": row["amount_estimated"],
                 },
                 commit=False,
             )

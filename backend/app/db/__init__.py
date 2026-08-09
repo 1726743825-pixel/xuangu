@@ -10,6 +10,7 @@ from .compat import (
     replace_strategy_selections,
     save_job,
     save_daily_quotes,
+    save_intraday_quotes,
     save_selections,
 )
 from .crud import CRUDBase
@@ -31,6 +32,7 @@ __all__ = [
     "init_db",
     "has_daily_quotes",
     "save_daily_quotes",
+    "save_intraday_quotes",
     "save_selections",
     "replace_strategy_selections",
     "read_selections",

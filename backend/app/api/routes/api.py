@@ -5,6 +5,7 @@ from datetime import date, datetime
 import os
 import secrets
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -15,10 +16,12 @@ from ... import db
 from ...data.market_data import latest_trading_date
 from ...integrations.market_adapter import get_quote
 from ...jobs import execute_quote_sync, execute_selection
-from ...models import DailyQuote, SelectionResult as SelectionResultModel, Stock
+from ...models import DailyQuote, IntradayQuote, SelectionResult as SelectionResultModel, Stock
 from ...schemas import (
     APIResponse,
     HealthData,
+    IntradayQuoteImportRequest,
+    IntradayQuoteImportResult,
     Quote,
     QuoteImportRequest,
     QuoteImportResult,
@@ -224,6 +227,37 @@ def import_quotes(
     ))
 
 
+@router.post("/quotes/intraday/import", response_model=APIResponse[IntradayQuoteImportResult])
+def import_intraday_quotes(
+    request: IntradayQuoteImportRequest,
+    session: Session = Depends(get_db),
+    _: None = Depends(_require_job_token),
+) -> APIResponse[IntradayQuoteImportResult]:
+    """Store locally supplied real 30-minute bars; no external source is queried."""
+    rows = []
+    for item in request.quotes:
+        stock_name = item.stock_name
+        if stock_name is None:
+            stock = session.get(Stock, item.stock_code)
+            if stock is None:
+                raise HTTPException(status_code=422, detail="stock_name is required for an unknown stock")
+            stock_name = stock.name
+        rows.append({
+            "code": item.stock_code,
+            "name": stock_name,
+            "interval": item.interval,
+            "trade_datetime": item.trade_datetime,
+            "open": item.open, "high": item.high, "low": item.low, "close": item.close,
+            "volume": item.volume, "amount": item.amount,
+            "amount_estimated": item.amount_estimated,
+        })
+    db.save_intraday_quotes(rows)
+    timestamps = [item.trade_datetime for item in request.quotes]
+    return APIResponse(data=IntradayQuoteImportResult(
+        count=len(rows), start_datetime=min(timestamps), end_datetime=max(timestamps)
+    ))
+
+
 @router.post("/quotes/sync", response_model=APIResponse[RunSelectionAccepted], status_code=status.HTTP_202_ACCEPTED)
 def sync_quotes(
     background_tasks: BackgroundTasks,
@@ -272,11 +306,27 @@ def _weekly_bars(rows: list[DailyQuote]) -> list[list[object]]:
 @router.get("/stock/{code}/kline", response_model=APIResponse[list[list[object]]])
 def stock_kline(
     code: str,
-    period: Literal["daily", "weekly"] = Query("daily"),
+    period: Literal["daily", "weekly", "30m"] = Query("daily"),
     session: Session = Depends(get_db),
 ) -> APIResponse[list[list[object]]]:
     if session.get(Stock, code) is None:
         raise HTTPException(status_code=404, detail="股票不存在")
+    if period == "30m":
+        intraday_rows = session.scalars(
+            select(IntradayQuote)
+            .where(IntradayQuote.stock_code == code, IntradayQuote.interval == "30m")
+            .order_by(IntradayQuote.trade_datetime)
+        ).all()
+        shanghai = ZoneInfo("Asia/Shanghai")
+        values = [
+            [
+                row.trade_datetime.replace(tzinfo=shanghai).isoformat(),
+                float(row.open or 0), float(row.close or 0), float(row.low or 0),
+                float(row.high or 0), float(row.volume or 0),
+            ]
+            for row in intraday_rows
+        ]
+        return APIResponse(data=values)
     rows = session.scalars(
         select(DailyQuote).where(DailyQuote.stock_code == code).order_by(DailyQuote.trade_date).limit(500)
     ).all()
