@@ -161,8 +161,8 @@ export function buildKlineSeries(model: KlineModel) {
   }
   if (model.buyBaseline && model.dates.length) {
     markLineData.push([
-      { name: "第二日开盘买入基准", coord: [model.buyBaseline.date, model.buyBaseline.price] },
-      { coord: [model.dates.at(-1), model.buyBaseline.price] },
+      { name: "", coord: [model.buyBaseline.date, model.buyBaseline.price], label: { show: false } },
+      { coord: [model.dates.at(-1), model.buyBaseline.price], label: { show: false } },
     ]);
   }
   const series: Array<Record<string, unknown>> = [

@@ -46,7 +46,19 @@ export function KlineChart({ data, selectionDate, height = 620, className = "", 
           const candle = entries.find((entry) => entry.seriesName === "历史行情" && Array.isArray(entry.data))?.data as number[] | undefined;
           const forecast = entries.find((entry) => entry.seriesName === "技术情景预测")?.data as number | null | undefined;
           const lines = [entries[0]?.axisValueLabel ?? ""];
-          if (candle) lines.push(`开盘：${candle[0].toFixed(2)}`, `收盘：${candle[1].toFixed(2)}`, `最低：${candle[2].toFixed(2)}`, `最高：${candle[3].toFixed(2)}`, `成交额（亿）：${formatTurnover(candle[1] * (data[chartData.dates.indexOf(entries[0]?.axisValueLabel ?? "")]?.[5] ?? 0))}`);
+          if (candle) {
+            const change = candle[0] === 0 ? null : (candle[1] / candle[0] - 1) * 100;
+            const changeLabel = change == null || change >= 0 ? "涨幅" : "跌幅";
+            const changeColor = change == null || change >= 0 ? "#ef4444" : "#10b981";
+            lines.push(
+              `开盘：${candle[0].toFixed(2)}`,
+              `收盘：${candle[1].toFixed(2)}`,
+              change == null ? `${changeLabel}：—` : `<span style="color:${changeColor};font-weight:600">${changeLabel}：${Math.abs(change).toFixed(2)}%</span>`,
+              `最低：${candle[2].toFixed(2)}`,
+              `最高：${candle[3].toFixed(2)}`,
+              `成交额（亿）：${formatTurnover(candle[1] * (data[chartData.dates.indexOf(entries[0]?.axisValueLabel ?? "")]?.[5] ?? 0))}`,
+            );
+          }
           if (typeof forecast === "number") lines.push(`技术情景预测：${forecast.toFixed(2)}`, "仅为技术情景，非投资建议");
           return lines.join("<br/>");
         },

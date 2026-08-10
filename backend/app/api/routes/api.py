@@ -77,7 +77,7 @@ def _selection_schema(
         change_pct=signals.get("change_pct"),
         score=row.score,
         strategy_name=row.strategy_name,
-        industry=row.stock.industry,
+        industry=row.stock.industry or signals.get("industry"),
         turnover_rate=signals.get("turnover_rate"),
         board_count=signals.get("board_count"),
         reasons=signals.get("reasons", []),
@@ -181,18 +181,15 @@ def selection_performance(
 
     quotes = session.scalars(
         select(DailyQuote)
-        .where(DailyQuote.stock_code == code, DailyQuote.trade_date >= trade_date)
+        .where(DailyQuote.stock_code == code, DailyQuote.trade_date > trade_date)
         .order_by(DailyQuote.trade_date)
-        .limit(61)
+        .limit(60)
     ).all()
-    base = quotes[0] if quotes and quotes[0].trade_date == trade_date else None
-    base_close = float(base.close) if base and base.close is not None else (
-        float(selection.selection_price) if selection.selection_price is not None else None
-    )
-    first_forward_index = 1 if base is not None else 0
+    base = quotes[0] if quotes else None
+    base_close = float(base.open) if base and base.open is not None else None
     periods: list[HoldingPeriodReturn] = []
     for label, trading_days in _PERFORMANCE_PERIODS:
-        target_index = first_forward_index + trading_days - 1
+        target_index = trading_days - 1
         target = quotes[target_index] if base_close is not None and len(quotes) > target_index else None
         if target is None or target.close is None:
             periods.append(HoldingPeriodReturn(label=label, trading_days=trading_days, status="暂无数据"))

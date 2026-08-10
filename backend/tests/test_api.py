@@ -267,6 +267,20 @@ def test_market_data_imports_do_not_clear_selection_industry(monkeypatch):
     assert stock["industry"] == "化学制药 / 生物疫苗"
 
 
+def test_selection_list_uses_signal_industry_when_stock_industry_is_missing(monkeypatch):
+    trade_date = "2030-02-03"
+    db.save_selections([{
+        "code": "300705", "name": "信号行业", "trade_date": trade_date, "score": 91,
+        "strategy_name": "超短线技术共振", "industry": None,
+        "signals": {"industry": "化学制药", "reasons": [], "indicators": {}},
+    }])
+    with TestClient(app) as client:
+        response = client.get(f"/api/selections?date={trade_date}&strategy=超短线技术共振")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["items"][0]["industry"] == "化学制药"
+
+
 def test_selection_performance_uses_real_kline_positions_and_reports_missing_future_data(monkeypatch):
     monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
     headers = {"X-Job-Token": "ci-secret"}
@@ -279,24 +293,34 @@ def test_selection_performance_uses_real_kline_positions_and_reports_missing_fut
         assert imported.status_code == 200
         db.save_daily_quotes([
             {
-                "code": code, "name": f"测试{code}",
-                "trade_date": (selection_date + timedelta(days=index)).isoformat(),
-                "open": close, "high": close, "low": close, "close": close, "volume": 1000,
-            }
-            for index, close in enumerate((10, 11, 9, 12))
+                "code": code, "name": f"测试{code}", "trade_date": selection_date.isoformat(),
+                "open": 10, "high": 10, "low": 10, "close": 10, "volume": 1000,
+            },
+            {
+                "code": code, "name": f"测试{code}", "trade_date": (selection_date + timedelta(days=1)).isoformat(),
+                "open": 11, "high": 12, "low": 10, "close": 11.55, "volume": 1000,
+            },
+            {
+                "code": code, "name": f"测试{code}", "trade_date": (selection_date + timedelta(days=2)).isoformat(),
+                "open": 12, "high": 13, "low": 11, "close": 12.1, "volume": 1000,
+            },
+            {
+                "code": code, "name": f"测试{code}", "trade_date": (selection_date + timedelta(days=3)).isoformat(),
+                "open": 13, "high": 14, "low": 12, "close": 12.65, "volume": 1000,
+            },
         ])
         response = client.get(
             f"/api/selections/{code}/performance?date={selection_date.isoformat()}&strategy={strategy}"
         )
     assert response.status_code == 200
     payload = response.json()["data"]
-    assert payload["base_close"] == 10.0
+    assert payload["base_close"] == 11.0
     periods = {item["label"]: item for item in payload["periods"]}
     assert periods["1d"] == {
         "label": "1d", "trading_days": 1, "target_date": "2030-03-02",
-        "close": 11.0, "return_pct": 10.0, "status": "ok",
+        "close": 11.55, "return_pct": 5.0, "status": "ok",
     }
-    assert periods["3d"]["return_pct"] == 20.0
+    assert periods["3d"]["return_pct"] == 15.0
     assert periods["5d"] == {
         "label": "5d", "trading_days": 5, "target_date": None,
         "close": None, "return_pct": None, "status": "暂无数据",
@@ -328,11 +352,11 @@ def test_selection_performance_uses_fixed_price_when_selection_date_has_no_quote
 
     assert response.status_code == 200
     payload = response.json()["data"]
-    assert payload["base_close"] == 10.0
+    assert payload["base_close"] == 10.5
     periods = {item["label"]: item for item in payload["periods"]}
     assert periods["1d"] == {
         "label": "1d", "trading_days": 1, "target_date": "2030-03-04",
-        "close": 11.0, "return_pct": 10.0, "status": "ok",
+        "close": 11.0, "return_pct": 4.7619, "status": "ok",
     }
 
 

@@ -28,11 +28,13 @@ assert.deepEqual(Array.from(history.markLine.data.slice(0, 2), (item) => item.na
 const buyBaseline = history.markLine.data.at(-1);
 assert.equal(model.buyBaseline.date, "2026-07-11");
 assert.equal(model.buyBaseline.price, rows[10][1]);
-assert.equal(buyBaseline[0].name, "第二日开盘买入基准");
+assert.equal(buyBaseline[0].name, "");
 assert.equal(buyBaseline[0].coord[0], model.buyBaseline.date);
 assert.equal(buyBaseline[0].coord[1], model.buyBaseline.price);
+assert.equal(buyBaseline[0].label.show, false);
 assert.equal(buyBaseline[1].coord[0], model.dates.at(-1));
 assert.equal(buyBaseline[1].coord[1], model.buyBaseline.price);
+assert.equal(buyBaseline[1].label.show, false);
 assert.equal(history.markLine.lineStyle.color, "rgba(0,0,0,.8)");
 assert.equal(history.markLine.lineStyle.opacity, 0.8);
 assert.equal(model.forecast.length, 5);
@@ -62,5 +64,6 @@ assert.match(chartSource, /grid: \[\{ left: 76, right: 34, top: 42, height: "59%
 assert.match(chartSource, /axisPointer: \{ link: \[\{ xAxisIndex: \[0, 1\] \}\], snap: true \}/);
 assert.match(chartSource, /axisPointer: \{ snap: true \}/);
 assert.match(chartSource, /dataZoom: \[\s*\{ type: "inside", xAxisIndex: \[0, 1\]/);
+assert.match(chartSource, /<span style="color:\$\{changeColor\};font-weight:600">\$\{changeLabel\}：\$\{Math\.abs\(change\)\.toFixed\(2\)\}%<\/span>/);
 
 console.log("K-line option regression checks passed");
