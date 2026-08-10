@@ -4,11 +4,12 @@ export type BackendKlineRow = [date: string, open: number, close: number, low: n
 type ForecastPoint = { date: string; value: number; lower: number; upper: number };
 type ForecastScenario = { points: ForecastPoint[]; support?: number; resistance?: number };
 type NullableNumber = number | null;
+type TurnoverBar = { value: number | null; itemStyle?: { color: string } };
 
 export type KlineModel = {
   dates: string[];
   candles: Array<number[] | string>;
-  turnover: number[];
+  turnover: TurnoverBar[];
   forecast: ForecastPoint[];
   support?: number;
   resistance?: number;
@@ -116,7 +117,13 @@ export function buildKlineModel(rows: BackendKlineRow[], showForecast: boolean):
   return {
     dates,
     candles: [...rows.map(([, open, close, low, high]) => [open, close, low, high]), ...forecast.map(() => "-")],
-    turnover: rows.map(([, , close, , , volume]) => close * volume),
+    turnover: [
+      ...rows.map(([, open, close, , , volume]) => ({
+        value: close * volume,
+        itemStyle: { color: close >= open ? "#ef4444" : "#10b981" },
+      })),
+      ...forecast.map(() => ({ value: null })),
+    ],
     forecast,
     support: scenario.support,
     resistance: scenario.resistance,
@@ -149,7 +156,7 @@ export function buildKlineSeries(model: KlineModel) {
     { name: "布林上轨", type: "line", data: model.bollingerUpper, showSymbol: false, connectNulls: false, clip: false, z: 3, lineStyle: { width: 1.2, type: "dashed", color: "rgba(59,130,246,.75)" } },
     { name: "布林中轨", type: "line", data: model.bollingerMiddle, showSymbol: false, connectNulls: false, clip: false, z: 3, lineStyle: { width: 1.2, color: "rgba(37,99,235,.7)" } },
     { name: "布林下轨", type: "line", data: model.bollingerLower, showSymbol: false, connectNulls: false, clip: false, z: 3, lineStyle: { width: 1.2, type: "dashed", color: "rgba(59,130,246,.75)" } },
-    { name: "成交额（亿）", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: model.turnover, barMaxWidth: 12, z: 2, itemStyle: { color: "#818cf8" } },
+    { name: "成交额（亿）", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: model.turnover, barMaxWidth: 12, z: 2 },
   ];
   if (model.forecast.length) {
     series.push(
