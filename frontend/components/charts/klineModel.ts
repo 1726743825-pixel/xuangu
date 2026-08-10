@@ -18,6 +18,7 @@ export type KlineModel = {
   forecastLine: NullableNumber[];
   forecastLower: NullableNumber[];
   forecastRange: NullableNumber[];
+  forecastBand: Array<[number, number, number]>;
   priceMin: number;
   priceMax: number;
   historyLength: number;
@@ -64,10 +65,9 @@ function buildForecast(rows: BackendKlineRow[]): ForecastScenario {
   const support = Math.max(low60, densityPrice <= lastClose ? densityPrice : low60);
   const resistance = Math.min(high60, densityPrice >= lastClose ? densityPrice : high60);
   const points = nextTradingDates(rows.at(-1)![0], 5).map((date, index) => {
-    const unconstrained = lastClose * (1 + slopeRate) ** (index + 1);
-    const value = Math.min(Math.max(unconstrained, support), resistance);
+    const value = lastClose * (1 + slopeRate) ** (index + 1);
     const width = value * dailyVolatility * Math.sqrt(index + 1);
-    return { date, value, lower: Math.max(support, value - width), upper: Math.min(resistance, value + width) };
+    return { date, value, lower: Math.max(value * 0.01, value - width), upper: value + width };
   });
   return { points, support, resistance };
 }
@@ -94,7 +94,7 @@ function bollinger(rows: BackendKlineRow[]) {
 export function buildKlineModel(rows: BackendKlineRow[], showForecast: boolean): KlineModel {
   if (!rows.length) return {
     dates: [], candles: [], turnover: [], forecast: [], bollingerUpper: [], bollingerMiddle: [], bollingerLower: [],
-    forecastLine: [], forecastLower: [], forecastRange: [], priceMin: 0, priceMax: 1, historyLength: 0,
+    forecastLine: [], forecastLower: [], forecastRange: [], forecastBand: [], priceMin: 0, priceMax: 1, historyLength: 0,
   };
   const scenario = showForecast ? buildForecast(rows) : { points: [] };
   const forecast = scenario.points;
@@ -126,6 +126,7 @@ export function buildKlineModel(rows: BackendKlineRow[], showForecast: boolean):
     forecastLine: forecast.length ? [...spacer, rows.at(-1)![2], ...forecast.map(({ value }) => value)] : [],
     forecastLower: forecast.length ? [...spacer, rows.at(-1)![2], ...forecast.map(({ lower }) => lower)] : [],
     forecastRange: forecast.length ? [...spacer, 0, ...forecast.map(({ lower, upper }) => upper - lower)] : [],
+    forecastBand: forecast.length ? [[rows.length - 1, rows.at(-1)![2], rows.at(-1)![2]], ...forecast.map(({ lower, upper }, index) => [rows.length + index, lower, upper] as [number, number, number])] : [],
     priceMin: rawMin - padding,
     priceMax: rawMax + padding,
     historyLength: rows.length,
@@ -152,9 +153,20 @@ export function buildKlineSeries(model: KlineModel) {
   ];
   if (model.forecast.length) {
     series.push(
-      { name: "预测区间下沿", type: "line", data: model.forecastLower, stack: "预测区间", showSymbol: false, clip: false, z: 1, lineStyle: { width: 1, type: "dashed", color: "rgba(139,92,246,.45)" }, areaStyle: { color: "transparent" }, silent: true },
-      { name: "预测区间", type: "line", data: model.forecastRange, stack: "预测区间", showSymbol: false, clip: false, z: 1, lineStyle: { width: 1, type: "dashed", color: "rgba(139,92,246,.45)" }, areaStyle: { color: "rgba(139,92,246,.14)" }, silent: true },
-      { name: "技术情景预测", type: "line", data: model.forecastLine, showSymbol: false, connectNulls: false, clip: false, z: 6, lineStyle: { width: 2.5, color: "rgba(124,58,237,.8)" } },
+      {
+        name: "预测区间", type: "custom", data: model.forecastBand, clip: false, z: 2, silent: true,
+        renderItem: (params: { dataIndex: number }, api: { value: (dimension: number) => number; coord: (value: number[]) => number[]; style: (style: Record<string, unknown>) => Record<string, unknown> }) => {
+          if (params.dataIndex >= model.forecastBand.length - 1) return null;
+          const current = [api.value(0), api.value(1), api.value(2)];
+          const next = model.forecastBand[params.dataIndex + 1];
+          const upperLeft = api.coord([current[0], current[2]]);
+          const upperRight = api.coord([next[0], next[2]]);
+          const lowerRight = api.coord([next[0], next[1]]);
+          const lowerLeft = api.coord([current[0], current[1]]);
+          return { type: "polygon", shape: { points: [upperLeft, upperRight, lowerRight, lowerLeft] }, style: api.style({ fill: "rgba(139,92,246,.14)", stroke: "rgba(139,92,246,.45)", lineWidth: 1 }) };
+        },
+      },
+      { name: "技术情景预测", type: "line", data: model.forecastLine, showSymbol: false, connectNulls: false, clip: false, z: 7, lineStyle: { width: 2.5, color: "rgba(124,58,237,.8)" } },
     );
   }
   return series;

@@ -29,6 +29,8 @@ assert.equal(model.dates.length, rows.length + 5);
 assert.deepEqual(Array.from(model.dates.slice(rows.length)), Array.from(model.forecast, (item) => item.date));
 assert.ok(model.forecastLine.slice(0, rows.length - 1).every((value) => value == null));
 assert.equal(model.forecastLine[rows.length - 1], rows.at(-1)[2]);
+assert.equal(model.forecastBand.length, 6);
+assert.ok(model.forecast.some((item) => item.upper > model.resistance), "forecast interval must not be clamped by resistance");
 assert.ok(model.bollingerUpper.filter((value) => value != null).length >= 11);
 assert.ok(model.bollingerMiddle.filter((value) => value != null).length >= 11);
 assert.ok(model.bollingerLower.filter((value) => value != null).length >= 11);
@@ -40,5 +42,6 @@ assert.ok(model.priceMin < lowerBound, "price axis must cover Bollinger/forecast
 for (const name of ["布林上轨", "布林中轨", "布林下轨", "技术情景预测", "预测区间"]) {
   assert.equal(series.find((item) => item.name === name).clip, false, `${name} must not be clipped`);
 }
+assert.equal(series.find((item) => item.name === "预测区间").type, "custom");
 
 console.log("K-line option regression checks passed");

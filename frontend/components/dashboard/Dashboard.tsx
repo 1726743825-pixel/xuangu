@@ -1,13 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { apiUrl, fetcher, getShanghaiToday } from "./api";
 import { DashboardFilters } from "./DashboardFilters";
-import { MarketIndexCards } from "./MarketIndexCards";
 import { Pagination } from "./Pagination";
 import { StockTable } from "./StockTable";
-import type { MarketIndices, SelectionItem, SelectionPage, StockPage } from "./types";
+import type { SelectionItem, SelectionPage, StockPage } from "./types";
 
 const PAGE_SIZE = 10;
 
@@ -19,7 +19,9 @@ function compareScoreDescending(a: SelectionItem, b: SelectionItem) {
 }
 
 export function Dashboard() {
-  const [date, setDate] = useState(getShanghaiToday);
+  const searchParams = useSearchParams();
+  const initialDate = searchParams.get("date");
+  const [date, setDate] = useState(() => (/^\d{4}-\d{2}-\d{2}$/.test(initialDate ?? "") ? initialDate! : getShanghaiToday()));
   const [strategy, setStrategy] = useState("");
   const [industry, setIndustry] = useState("");
   const [page, setPage] = useState(1);
@@ -29,9 +31,6 @@ export function Dashboard() {
     revalidateOnFocus: false,
   });
   const stocks = useSWR<StockPage>(apiUrl("/api/stocks?page=1&size=100"), fetcher, {
-    revalidateOnFocus: false,
-  });
-  const indices = useSWR<MarketIndices>(apiUrl("/api/market/indices"), fetcher, {
     revalidateOnFocus: false,
   });
 
@@ -51,7 +50,7 @@ export function Dashboard() {
   const safePage = Math.min(page, totalPages);
   const pageItems = filteredItems.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const error = selections.error || stocks.error;
-  const refreshing = selections.isValidating || stocks.isValidating || indices.isValidating;
+  const refreshing = selections.isValidating || stocks.isValidating;
 
   function resetPageAnd<T>(setter: (value: T) => void, value: T) {
     setPage(1);
@@ -85,7 +84,7 @@ export function Dashboard() {
             onDateChange={(value) => resetPageAnd(setDate, value)}
             onStrategyChange={(value) => resetPageAnd(setStrategy, value)}
             onIndustryChange={(value) => resetPageAnd(setIndustry, value)}
-            onRefresh={() => void Promise.all([selections.mutate(), stocks.mutate(), indices.mutate()])}
+            onRefresh={() => void Promise.all([selections.mutate(), stocks.mutate()])}
           />
 
           {error && (
@@ -93,8 +92,6 @@ export function Dashboard() {
               数据加载失败，请确认后端服务已启动后重试。
             </div>
           )}
-
-          <MarketIndexCards items={indices.data?.items ?? []} loading={!indices.data && !indices.error} />
 
           <section className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
             <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">

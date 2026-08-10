@@ -1,5 +1,6 @@
+import { Suspense } from "react";
 import { Dashboard } from "@/components/dashboard/Dashboard";
 
 export default function HomePage() {
-  return <Dashboard />;
+  return <Suspense><Dashboard /></Suspense>;
 }

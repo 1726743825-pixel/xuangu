@@ -44,6 +44,7 @@ export default function StockDetailPage({ params }: { params: { code: string } }
   const code = params.code.toUpperCase(); const [period, setPeriod] = useState<Period>("daily"); const searchParams = useSearchParams();
   const selectionDate = searchParams.get("date"); const selectionStrategy = searchParams.get("strategy");
   const hasSelectionContext = Boolean(selectionDate && /^\d{4}-\d{2}-\d{2}$/.test(selectionDate) && selectionStrategy);
+  const backHref = selectionDate && /^\d{4}-\d{2}-\d{2}$/.test(selectionDate) ? `/?date=${encodeURIComponent(selectionDate)}` : "/";
   const detail = useSWR<StockDetail>(apiUrl(`/api/stock/${encodeURIComponent(code)}/detail`), fetcher, { revalidateOnFocus: false });
   const dailyKline = useSWR<BackendKlineRow[]>(apiUrl(`/api/stock/${encodeURIComponent(code)}/kline?period=daily`), fetcher, { revalidateOnFocus: false });
   const weeklyKline = useSWR<BackendKlineRow[]>(period === "weekly" ? apiUrl(`/api/stock/${encodeURIComponent(code)}/kline?period=weekly`) : null, fetcher, { revalidateOnFocus: false });
@@ -59,7 +60,7 @@ export default function StockDetailPage({ params }: { params: { code: string } }
 
   return <main className="min-h-screen overflow-x-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
     <div className="mx-auto w-full max-w-[1480px] px-4 py-7 sm:px-6 lg:px-8">
-      <Link href="/" className="inline-flex items-center gap-1 text-sm font-medium text-slate-500 transition hover:text-indigo-600 dark:text-slate-400">← 返回选股结果</Link>
+      <Link href={backHref} className="inline-flex items-center gap-1 text-sm font-medium text-slate-500 transition hover:text-indigo-600 dark:text-slate-400">← 返回选股结果</Link>
       {detail.error && <div role="alert" className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">股票详情加载失败，请确认代码与后端服务。</div>}
       <header className="mt-5 rounded-2xl border border-slate-200/80 bg-white px-5 py-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:px-6">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
