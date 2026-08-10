@@ -4,6 +4,7 @@ import vm from "node:vm";
 import ts from "typescript";
 
 const source = readFileSync(new URL("../components/charts/klineModel.ts", import.meta.url), "utf8");
+const chartSource = readFileSync(new URL("../components/charts/KlineChart.tsx", import.meta.url), "utf8");
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
@@ -47,5 +48,8 @@ for (const name of ["布林上轨", "布林中轨", "布林下轨", "技术情�
   assert.equal(series.find((item) => item.name === name).clip, false, `${name} must not be clipped`);
 }
 assert.equal(series.find((item) => item.name === "预测区间").type, "custom");
+assert.match(chartSource, /grid: \[\{ left: 76, right: 34, top: 42, height: "59%", containLabel: false \}, \{ left: 76, right: 34, top: "72%", height: "14%", containLabel: false \}\]/);
+assert.match(chartSource, /axisPointer: \{ link: \[\{ xAxisIndex: "all" \}\] \}/);
+assert.match(chartSource, /dataZoom: \[\s*\{ type: "inside", xAxisIndex: \[0, 1\]/);
 
 console.log("K-line option regression checks passed");
