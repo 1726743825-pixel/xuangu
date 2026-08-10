@@ -229,6 +229,44 @@ def test_selection_import_preserves_local_display_fields_and_js_aliases(monkeypa
     }
 
 
+def test_market_data_imports_do_not_clear_selection_industry(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    trade_date = "2030-02-02"
+    with TestClient(app) as client:
+        imported = client.post("/api/selections/import", json=_import_payload(
+            trade_date=trade_date,
+            items=[{
+                "code": "300703", "name": "行业保持", "score": 92,
+                "industry": "化学制药 / 生物疫苗",
+                "strategy_name": "超短线技术共振",
+            }],
+        ), headers=headers)
+        assert imported.status_code == 200
+
+        assert client.post("/api/quotes/import", json={"quotes": [{
+            "stock_code": "300703", "stock_name": "行业保持", "trade_date": trade_date,
+            "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 1000,
+            "amount": 10500, "source": "akshare-sina",
+        }]}, headers=headers).status_code == 200
+        assert client.post("/api/quotes/intraday/import", json={"quotes": [{
+            "code": "300703", "name": "行业保持", "interval": "30m",
+            "datetime": f"{trade_date}T09:30:00+08:00",
+            "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 1000,
+            "amount": 10500, "estimated": False, "source": "akshare-sina",
+        }]}, headers=headers).status_code == 200
+        assert client.post("/api/market/snapshots/import", json=_market_snapshot_payload(
+            as_of=f"{trade_date}T15:00:00+08:00", stock_code="300703",
+        ), headers=headers).status_code == 200
+        selections = client.get(f"/api/selections?date={trade_date}&strategy=超短线技术共振")
+        stocks = client.get("/api/stocks?size=100")
+
+    assert selections.status_code == 200
+    assert selections.json()["data"]["items"][0]["industry"] == "化学制药 / 生物疫苗"
+    stock = next(item for item in stocks.json()["data"]["items"] if item["code"] == "300703")
+    assert stock["industry"] == "化学制药 / 生物疫苗"
+
+
 def test_selection_performance_uses_real_kline_positions_and_reports_missing_future_data(monkeypatch):
     monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
     headers = {"X-Job-Token": "ci-secret"}
@@ -265,6 +303,37 @@ def test_selection_performance_uses_real_kline_positions_and_reports_missing_fut
     }
     assert periods["3m"]["trading_days"] == 60
     assert periods["3m"]["status"] == "暂无数据"
+
+
+def test_selection_performance_uses_fixed_price_when_selection_date_has_no_quote(monkeypatch):
+    monkeypatch.setenv("JOB_API_TOKEN", "ci-secret")
+    headers = {"X-Job-Token": "ci-secret"}
+    code, strategy = "300704", "超短线技术共振"
+    with TestClient(app) as client:
+        imported = client.post("/api/selections/import", json=_import_payload(
+            trade_date="2030-03-03",
+            items=[{
+                "code": code, "name": "周末入选", "score": 90, "strategy_name": strategy,
+                "selection_price": 10.0, "selection_price_date": "2030-03-01",
+            }],
+        ), headers=headers)
+        assert imported.status_code == 200
+        db.save_daily_quotes([
+            {
+                "code": code, "name": f"测试{code}", "trade_date": "2030-03-04",
+                "open": 10.5, "high": 11, "low": 10, "close": 11, "volume": 1000,
+            }
+        ])
+        response = client.get(f"/api/selections/{code}/performance?date=2030-03-03&strategy={strategy}")
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["base_close"] == 10.0
+    periods = {item["label"]: item for item in payload["periods"]}
+    assert periods["1d"] == {
+        "label": "1d", "trading_days": 1, "target_date": "2030-03-04",
+        "close": 11.0, "return_pct": 10.0, "status": "ok",
+    }
 
 
 def _selection_item(code: str, score: float, strategy_name: str = "默认策略") -> dict:

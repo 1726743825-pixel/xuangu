@@ -29,6 +29,8 @@ class StockDAO(CRUDBase[Stock]):
     def upsert(self, session: Session, *, values: dict[str, Any], commit: bool = True) -> Stock:
         statement = sqlite_insert(Stock).values(**values)
         update_values = {key: value for key, value in values.items() if key != "code"}
+        if "industry" in update_values:
+            update_values["industry"] = func.coalesce(statement.excluded.industry, Stock.industry)
         update_values["updated_at"] = func.current_timestamp()
         statement = statement.on_conflict_do_update(index_elements=[Stock.code], set_=update_values)
         session.execute(statement)

@@ -5,6 +5,7 @@ type ForecastPoint = { date: string; value: number; lower: number; upper: number
 type ForecastScenario = { points: ForecastPoint[]; support?: number; resistance?: number };
 type NullableNumber = number | null;
 type TurnoverBar = { value: number | null; itemStyle?: { color: string } };
+type BuyBaseline = { date: string; price: number };
 
 export type KlineModel = {
   dates: string[];
@@ -23,6 +24,7 @@ export type KlineModel = {
   priceMin: number;
   priceMax: number;
   historyLength: number;
+  buyBaseline?: BuyBaseline;
 };
 
 function standardDeviation(values: number[]) {
@@ -92,7 +94,13 @@ function bollinger(rows: BackendKlineRow[]) {
   return { upper, middle, lower };
 }
 
-export function buildKlineModel(rows: BackendKlineRow[], showForecast: boolean): KlineModel {
+function findBuyBaseline(rows: BackendKlineRow[], selectionDate?: string | null): BuyBaseline | undefined {
+  if (!selectionDate) return undefined;
+  const row = rows.find(([date]) => date.slice(0, 10) > selectionDate);
+  return row ? { date: row[0], price: row[1] } : undefined;
+}
+
+export function buildKlineModel(rows: BackendKlineRow[], showForecast: boolean, selectionDate?: string | null): KlineModel {
   if (!rows.length) return {
     dates: [], candles: [], turnover: [], forecast: [], bollingerUpper: [], bollingerMiddle: [], bollingerLower: [],
     forecastLine: [], forecastLower: [], forecastRange: [], forecastBand: [], priceMin: 0, priceMax: 1, historyLength: 0,
@@ -100,6 +108,7 @@ export function buildKlineModel(rows: BackendKlineRow[], showForecast: boolean):
   const scenario = showForecast ? buildForecast(rows) : { points: [] };
   const forecast = scenario.points;
   const dates = [...rows.map(([date]) => date), ...forecast.map(({ date }) => date)];
+  const buyBaseline = findBuyBaseline(rows, selectionDate);
   const spacer = Array<NullableNumber>(Math.max(rows.length - 1, 0)).fill(null);
   const bands = bollinger(rows);
   const futureBlanks = Array<NullableNumber>(forecast.length).fill(null);
@@ -110,6 +119,7 @@ export function buildKlineModel(rows: BackendKlineRow[], showForecast: boolean):
     ...forecast.flatMap(({ lower, upper }) => [lower, upper]),
     ...(scenario.support == null ? [] : [scenario.support]),
     ...(scenario.resistance == null ? [] : [scenario.resistance]),
+    ...(buyBaseline == null ? [] : [buyBaseline.price]),
   ];
   const rawMin = Math.min(...priceValues);
   const rawMax = Math.max(...priceValues);
@@ -137,20 +147,31 @@ export function buildKlineModel(rows: BackendKlineRow[], showForecast: boolean):
     priceMin: rawMin - padding,
     priceMax: rawMax + padding,
     historyLength: rows.length,
+    buyBaseline,
   };
 }
 
 export function buildKlineSeries(model: KlineModel) {
+  const markLineData: unknown[] = [];
+  if (model.support != null) {
+    markLineData.push({ name: "支撑", yAxis: model.support, lineStyle: { type: "dashed", color: "rgba(16,185,129,.75)", opacity: 0.75 } });
+  }
+  if (model.resistance != null) {
+    markLineData.push({ name: "压力", yAxis: model.resistance, lineStyle: { type: "dashed", color: "rgba(239,68,68,.9)", opacity: 0.9 } });
+  }
+  if (model.buyBaseline && model.dates.length) {
+    markLineData.push([
+      { name: "第二日开盘买入基准", coord: [model.buyBaseline.date, model.buyBaseline.price] },
+      { coord: [model.dates.at(-1), model.buyBaseline.price] },
+    ]);
+  }
   const series: Array<Record<string, unknown>> = [
     {
       name: "历史行情", type: "candlestick", data: model.candles, z: 4,
       itemStyle: { color: "#ef4444", color0: "#10b981", borderColor: "#ef4444", borderColor0: "#10b981" },
-      markLine: model.forecast.length ? {
-        symbol: "none", silent: true,
-        data: [
-          { name: "支撑", yAxis: model.support, lineStyle: { type: "dashed", color: "rgba(16,185,129,.75)", opacity: 0.75 } },
-          { name: "压力", yAxis: model.resistance, lineStyle: { type: "dashed", color: "rgba(239,68,68,.9)", opacity: 0.9 } },
-        ],
+      markLine: markLineData.length ? {
+        symbol: "none", silent: true, lineStyle: { color: "rgba(0,0,0,.8)", opacity: 0.8, width: 1.5 },
+        data: markLineData,
       } : undefined,
     },
     { name: "布林上轨", type: "line", data: model.bollingerUpper, showSymbol: false, connectNulls: false, clip: false, z: 3, lineStyle: { width: 1.2, type: "dashed", color: "rgba(59,130,246,.75)" } },

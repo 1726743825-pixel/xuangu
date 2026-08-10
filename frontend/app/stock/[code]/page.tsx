@@ -71,7 +71,7 @@ export default function StockDetailPage({ params }: { params: { code: string } }
 
       <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
         <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-slate-950 dark:text-white">行情走势</h2><p className="mt-0.5 text-xs text-slate-400">K线 · 成交额</p></div><div className="inline-flex w-fit rounded-lg bg-slate-100 p-1 dark:bg-slate-800">{PERIODS.map((item) => <button key={item.value} type="button" onClick={() => setPeriod(item.value)} className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${period === item.value ? "bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-300" : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"}`}>{item.label}</button>)}</div></div>
-        <div className="p-2 sm:p-4"><KlineChart data={visibleRows} height={560} showForecast={period === "daily"} loading={klineLoading} emptyMessage={period === "30m" ? "暂无 30 分钟 K 线数据" : "暂无 K 线数据"} /></div>
+        <div className="p-2 sm:p-4"><KlineChart data={visibleRows} selectionDate={period === "daily" ? selectionDate : null} height={560} showForecast={period === "daily"} loading={klineLoading} emptyMessage={period === "30m" ? "暂无 30 分钟 K 线数据" : "暂无 K 线数据"} /></div>
       </section>
 
       <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">

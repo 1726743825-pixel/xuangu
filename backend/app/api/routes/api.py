@@ -186,10 +186,14 @@ def selection_performance(
         .limit(61)
     ).all()
     base = quotes[0] if quotes and quotes[0].trade_date == trade_date else None
-    base_close = float(base.close) if base and base.close is not None else None
+    base_close = float(base.close) if base and base.close is not None else (
+        float(selection.selection_price) if selection.selection_price is not None else None
+    )
+    first_forward_index = 1 if base is not None else 0
     periods: list[HoldingPeriodReturn] = []
     for label, trading_days in _PERFORMANCE_PERIODS:
-        target = quotes[trading_days] if base_close is not None and len(quotes) > trading_days else None
+        target_index = first_forward_index + trading_days - 1
+        target = quotes[target_index] if base_close is not None and len(quotes) > target_index else None
         if target is None or target.close is None:
             periods.append(HoldingPeriodReturn(label=label, trading_days=trading_days, status="暂无数据"))
             continue

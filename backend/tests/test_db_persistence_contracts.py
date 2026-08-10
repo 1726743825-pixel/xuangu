@@ -27,10 +27,10 @@ def test_snapshot_helpers_return_only_persisted_latest_values():
     assert snapshot["source"] == "akshare"
 
     db.save_market_snapshots([{
-        "code": "000001.SH", "name": "上证指数", "level": 3600.1,
+        "code": "TEST001.SH", "name": "测试指数", "level": 3600.1,
         "change_pct": 0.5, "as_of": "2026-08-08T15:01:00+08:00", "source": "akshare",
     }])
-    rows = db.read_market_snapshots(["000001.SH"])
+    rows = db.read_market_snapshots(["TEST001.SH"])
     assert len(rows) == 1
     assert rows[0]["level"] == Decimal("3600.1000")
 
