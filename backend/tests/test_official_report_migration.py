@@ -29,7 +29,7 @@ def _report_items() -> list[dict]:
     return [
         {
             "code": f"{600100 + index:06d}", "name": f"官方股票{index}", "score": 90 - index,
-            "trade_date": "2026-08-09", "strategy_name": "超短线技术共振",
+            "trade_date": "2026-08-09", "strategy_name": "追涨",
         }
         for index in range(10)
     ]
@@ -43,7 +43,7 @@ def test_migration_parses_then_purges_then_imports_exact_report(monkeypatch):
 
     def parse(path, target):
         events.append("parse")
-        assert str(path) == r"D:\Program Files\xuangu\result\选股结果2026年08月09日.html"
+        assert str(path) == r"D:\Program Files\xuangu\zhuizhang\result\选股结果2026年08月09日.html"
         assert target == "2026-08-09"
         return _report_items()
 
@@ -64,7 +64,7 @@ def test_migration_parses_then_purges_then_imports_exact_report(monkeypatch):
 
     monkeypatch.setattr(migration, "run_selection_from_report", parse)
     run = migration.migrate_official_report(
-        "2026-08-07", r"D:\Program Files\xuangu\result\选股结果2026年08月09日.html", "2026-08-09",
+        "2026-08-07", r"D:\Program Files\xuangu\zhuizhang\result\选股结果2026年08月09日.html", "2026-08-09",
         delete=delete, post=post,
     )
 

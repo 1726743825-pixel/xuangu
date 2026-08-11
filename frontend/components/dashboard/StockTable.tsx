@@ -18,6 +18,12 @@ function formatChange(value: number | null) {
   return `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+function strategyBadgeClass(strategyName: string) {
+  return strategyName === "超跌"
+    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+    : "bg-indigo-50 text-indigo-700 ring-indigo-200";
+}
+
 function detailHref(item: SelectionItem) {
   const query = new URLSearchParams({ date: item.trade_date, strategy: item.strategy_name });
   return `/stock/${encodeURIComponent(item.code)}?${query.toString()}`;
@@ -28,20 +34,22 @@ export function StockTable({ items, loading }: StockTableProps) {
 
   return (
     <div className="max-w-full overflow-x-auto overscroll-x-contain">
-      <table className="w-full min-w-[820px] table-fixed border-collapse">
+      <table className="w-full min-w-[900px] table-fixed border-collapse">
         <colgroup>
           <col className="w-[76px]" />
           <col className="w-[104px]" />
+          <col className="w-[84px]" />
           <col className="w-[120px]" />
           <col className="w-[120px]" />
           <col className="w-[100px]" />
-          <col className="w-[300px]" />
+          <col className="w-[260px]" />
           <col className="w-[100px]" />
         </colgroup>
         <thead>
           <tr className="border-b border-slate-200 bg-slate-50/80">
             <th className="sticky left-0 z-20 whitespace-nowrap bg-slate-50 px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-4">代码</th>
             <th className="sticky left-[76px] z-20 whitespace-nowrap bg-slate-50 px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-4">名称</th>
+            <th className="whitespace-nowrap px-3 py-3 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">策略</th>
             <th className="whitespace-nowrap px-3 py-3 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">选入当日价格</th>
             <th className="whitespace-nowrap px-3 py-3 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">涨跌幅</th>
             <th className="whitespace-nowrap px-3 py-3 text-center text-xs font-semibold uppercase tracking-wide text-slate-500">总分</th>
@@ -52,7 +60,7 @@ export function StockTable({ items, loading }: StockTableProps) {
         <tbody className="divide-y divide-slate-100">
           {loading ? Array.from({ length: 6 }, (_, index) => (
             <tr key={index} className="animate-pulse">
-              <td colSpan={7} className="px-5 py-4"><div className="h-5 rounded bg-slate-100" /></td>
+              <td colSpan={8} className="px-5 py-4"><div className="h-5 rounded bg-slate-100" /></td>
             </tr>
           )) : items.length ? items.map((item) => (
             <tr
@@ -70,6 +78,11 @@ export function StockTable({ items, loading }: StockTableProps) {
                 >
                   {item.name}
                 </Link>
+              </td>
+              <td className="whitespace-nowrap px-3 py-4 text-center">
+                <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${strategyBadgeClass(item.strategy_name)}`}>
+                  {item.strategy_name}
+                </span>
               </td>
               <td className="whitespace-nowrap px-3 py-4 text-center font-mono text-sm font-medium text-slate-800">{formatPrice(item.selection_price)}</td>
               <td className={`whitespace-nowrap px-3 py-4 text-center font-mono text-sm font-semibold ${item.change_pct == null || item.change_pct === 0 ? "text-slate-500" : item.change_pct > 0 ? "text-red-500" : "text-emerald-600"}`}>
@@ -89,7 +102,7 @@ export function StockTable({ items, loading }: StockTableProps) {
             </tr>
           )) : (
             <tr>
-              <td colSpan={7} className="px-5 py-16 text-center">
+              <td colSpan={8} className="px-5 py-16 text-center">
                 <p className="font-medium text-slate-700">没有找到选股结果</p>
                 <p className="mt-1 text-sm text-slate-400">请调整日期或筛选条件后重试</p>
               </td>

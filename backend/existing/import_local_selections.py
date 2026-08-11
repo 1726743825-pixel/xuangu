@@ -155,29 +155,36 @@ def _import_selection_run(
         raise SelectionImportError("本地选股结果为空，已拒绝上传")
     result_date = _result_trade_date(items)
 
-    try:
-        request_body = {"trade_date": result_date, "items": items}
-        if replace_existing:
-            request_body["replace_existing"] = True
-        response = post(
-            url,
-            headers={"X-Job-Token": token},
-            json=request_body,
-            timeout=60.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except httpx.HTTPStatusError as exc:
-        raise SelectionImportError(f"导入接口返回 HTTP {exc.response.status_code}") from exc
-    except httpx.HTTPError as exc:
-        raise SelectionImportError(f"请求导入接口失败: {type(exc).__name__}") from exc
-    except ValueError as exc:
-        raise SelectionImportError("导入接口返回了无效 JSON") from exc
+    grouped: dict[str, list[dict]] = {}
+    for item in items:
+        grouped.setdefault(str(item.get("strategy_name") or "默认策略"), []).append(item)
 
-    count = payload.get("data", {}).get("count") if isinstance(payload, dict) else None
-    if not isinstance(count, int) or count != len(items):
-        raise SelectionImportError("导入接口响应数量与本地结果不一致")
-    return SelectionImportRun(count=count, trade_date=result_date, items=items)
+    imported_count = 0
+    for strategy_name, strategy_items in grouped.items():
+        try:
+            request_body = {"trade_date": result_date, "items": strategy_items}
+            if replace_existing:
+                request_body["replace_existing"] = True
+            response = post(
+                url,
+                headers={"X-Job-Token": token},
+                json=request_body,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise SelectionImportError(f"{strategy_name}导入接口返回 HTTP {exc.response.status_code}") from exc
+        except httpx.HTTPError as exc:
+            raise SelectionImportError(f"{strategy_name}请求导入接口失败: {type(exc).__name__}") from exc
+        except ValueError as exc:
+            raise SelectionImportError(f"{strategy_name}导入接口返回了无效 JSON") from exc
+
+        count = payload.get("data", {}).get("count") if isinstance(payload, dict) else None
+        if not isinstance(count, int) or count != len(strategy_items):
+            raise SelectionImportError(f"{strategy_name}导入接口响应数量与本地结果不一致")
+        imported_count += count
+    return SelectionImportRun(count=imported_count, trade_date=result_date, items=items)
 
 
 def import_selections(

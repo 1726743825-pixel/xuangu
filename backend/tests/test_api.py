@@ -223,7 +223,7 @@ def test_selection_import_preserves_local_display_fields_and_js_aliases(monkeypa
         "code": "300701", "name": "工大高科", "trade_date": "2030-02-01",
         "price": 18.65, "selection_price": 18.65, "selection_price_date": "2030-02-01",
         "current_price": None, "current_price_as_of": None, "change_pct": 4.21, "score": 92.0,
-        "strategy_name": "超短线技术共振", "industry": "软件开发",
+        "strategy_name": "追涨", "industry": "软件开发",
         "turnover_rate": 12.8, "board_count": 2,
         "reasons": ["量价共振"], "indicators": {},
     }

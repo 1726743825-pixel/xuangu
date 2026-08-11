@@ -8,7 +8,8 @@ import pytest
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "existing" / "selection_script.py"
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "official_screener_report.html"
-OFFICIAL_REPORT_PATH = Path(r"D:\Program Files\xuangu\result\选股结果2026年08月09日.html")
+CHAODIE_FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "chaodie_report.html"
+OFFICIAL_REPORT_PATH = Path(r"D:\Program Files\xuangu\zhuizhang\result\选股结果2026年08月09日.html")
 SPEC = importlib.util.spec_from_file_location("local_selection_script", SCRIPT_PATH)
 assert SPEC and SPEC.loader
 selection_script = importlib.util.module_from_spec(SPEC)
@@ -25,7 +26,7 @@ def test_parse_official_report_preserves_authoritative_fields(monkeypatch):
     assert first["name"] == "百普赛斯"
     assert first["industry"] == "生物制品"
     assert first["trade_date"] == "2026-08-09"
-    assert first["strategy_name"] == "超短线技术共振"
+    assert first["strategy_name"] == "追涨"
     assert first["score"] == 87.0
     assert first["price"] is None
     assert first["change_pct"] == 20.0
@@ -49,6 +50,24 @@ def test_parse_official_report_only_applies_price_enricher(monkeypatch):
     assert [item["score"] for item in items] == [87.0, 85.0]
     assert [item["price"] for item in items] == [123.45, 123.45]
     assert [item["price"] for item in seen] == [None, None]
+
+
+def test_parse_chaodie_report_normalises_130_point_score():
+    items = selection_script.parse_chaodie_report(CHAODIE_FIXTURE_PATH, "2026-08-11")
+
+    assert len(items) == 2
+    first = items[0]
+    assert first["code"] == "301489"
+    assert first["name"] == "思泉新材"
+    assert first["industry"] == "电子化学品Ⅱ"
+    assert first["trade_date"] == "2026-08-11"
+    assert first["strategy_name"] == "超跌"
+    assert first["score"] == round(71.7 / 130 * 100, 6)
+    assert first["price"] == 99.02
+    assert first["change_pct"] == -3.4
+    assert first["indicators"]["raw_score"] == 71.7
+    assert first["indicators"]["raw_score_max"] == 130
+    assert first["indicators"]["official_details"].startswith("财务")
 
 
 def test_parse_official_report_rejects_reports_without_rows(tmp_path):

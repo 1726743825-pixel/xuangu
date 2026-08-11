@@ -147,7 +147,7 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 `-ReplaceExisting` 不会上传到计划任务默认命令；不要把它加入每日自动任务。替换前确认结果属于单一策略，并确认目标日期无误。
 
-确认手动运行正常后，以下命令才会**创建/更新** Windows 任务计划程序任务；它每天本机时间 15:05 运行，仅在当前用户已登录且位于国内网络时执行。任务通过 `backend/existing/selection_script.py` 运行用户拥有的 `D:\Program Files\xuangu\stock_screener.js`，读取其新生成的 HTML 报告；项目内置策略已禁用，不参与本机每日导入：
+确认手动运行正常后，以下命令才会**创建/更新** Windows 任务计划程序任务；它每天本机时间 15:05 运行，仅在当前用户已登录且位于国内网络时执行。任务通过 `backend/existing/selection_script.py` 依次运行用户拥有的 `D:\Program Files\xuangu\zhuizhang\stock_screener.js`（追涨）和 `D:\Program Files\xuangu\chaodie\chaodie_screener.js`（超跌），分别解析新生成的 HTML 报告并导入；项目内置策略已禁用，不参与本机每日导入：
 
 ```powershell
 .\scripts\install-local-selection-task.ps1
@@ -157,7 +157,7 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 日 K、30 分钟 K 和市场快照地址都由 `SELECTION_IMPORT_URL` 自动派生，无需配置第二个 URL 或令牌。上证指数、深证成指、创业板指、科创50四指数必须整包发送。个别入选股票行情不可用时会记录代码并继续其他真实数据；所有数据为空或任一接口失败时任务以非零退出码结束。权威选股导入成功后，即使后续行情网络失败，选股结果仍保留，错误会按“日K / 30m K / 指数与当前价”分项报告。
 
-官方报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果。报告自带价格时优先保留；否则用报告日期之前最近一个真实 AKShare 日K收盘作为 `selection_price`，同时保存该 bar 的 `selection_price_date`。当前价也来自最近真实日K，时间固定为该 bar 日期的收盘时刻；周末报告不会被标记成周末实时行情。行情同步只服务展示和收益计算，不参与候选股计算。
+追涨报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果。超跌报告为 130 分制，导入时会将 `score` 归一化到 0–100，并在 `indicators.raw_score/raw_score_max` 保留原始分。报告自带价格时优先保留；否则用报告日期之前最近一个真实 AKShare 日K收盘作为 `selection_price`，同时保存该 bar 的 `selection_price_date`。当前价也来自最近真实日K，时间固定为该 bar 日期的收盘时刻；周末报告不会被标记成周末实时行情。行情同步只服务展示和收益计算，不参与候选股计算。
 
 如需为已经入库的历史/周末官方报告补齐行情，使用独立受控命令；它只读取该日期现有选股，不运行 D 盘 Node、不重新选股、不替换或删除任何结果：
 
@@ -176,7 +176,7 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 ```powershell
 .\scripts\migrate-official-report.ps1 `
   -DeleteTradeDate 2026-08-07 `
-  -ReportPath 'D:\Program Files\xuangu\result\选股结果2026年08月09日.html' `
+  -ReportPath 'D:\Program Files\xuangu\zhuizhang\result\选股结果2026年08月09日.html' `
   -TargetTradeDate 2026-08-09 `
   -ConfirmPurge
 ```

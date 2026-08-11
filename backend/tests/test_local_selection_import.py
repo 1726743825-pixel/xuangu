@@ -124,6 +124,26 @@ def test_import_selection_sends_replace_flag_only_when_explicit(monkeypatch):
     assert "secret-not-to-print" not in str(captured["json"])
 
 
+def test_import_selection_posts_each_strategy_independently(monkeypatch):
+    monkeypatch.setenv("SELECTION_IMPORT_URL", "https://example.test/api/selections/import")
+    monkeypatch.setenv("JOB_API_TOKEN", "secret-not-to-print")
+    captured = []
+    mixed_items = [
+        {**_items("")[0], "strategy_name": "追涨"},
+        {"code": "301489", "name": "思泉新材", "score": 55.153846, "trade_date": "2026-08-07", "strategy_name": "超跌"},
+    ]
+
+    def post(_url, **kwargs):
+        captured.append(kwargs["json"])
+        return _Response(len(kwargs["json"]["items"]))
+
+    assert local_import.import_selections(
+        "2026-08-07", replace_existing=True, selector=lambda _: mixed_items, post=post,
+    ) == 2
+    assert [payload["items"][0]["strategy_name"] for payload in captured] == ["追涨", "超跌"]
+    assert all(payload["replace_existing"] is True for payload in captured)
+
+
 def test_main_success_log_uses_actual_trade_date(monkeypatch, capsys):
     monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
     monkeypatch.setattr(local_import, "_import_selection_run", lambda *_args, **_kwargs: local_import.SelectionImportRun(10, "2026-08-07", _items("")))

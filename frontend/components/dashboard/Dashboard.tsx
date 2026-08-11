@@ -10,6 +10,7 @@ import { StockTable } from "./StockTable";
 import type { SelectionItem, SelectionPage, StockPage } from "./types";
 
 const PAGE_SIZE = 10;
+const STRATEGY_ORDER = ["追涨", "超跌"];
 
 function compareScoreDescending(a: SelectionItem, b: SelectionItem) {
   if (a.score == null && b.score == null) return a.code.localeCompare(b.code, "zh-CN", { numeric: true });
@@ -35,7 +36,14 @@ export function Dashboard() {
   });
 
   const items = selections.data?.items ?? [];
-  const strategies = useMemo(() => Array.from(new Set(items.map((item) => item.strategy_name))).sort((a, b) => a.localeCompare(b, "zh-CN")), [items]);
+  const strategies = useMemo(() => {
+    const existing = new Set(items.map((item) => item.strategy_name));
+    const ordered = STRATEGY_ORDER.filter((item) => existing.has(item));
+    const extra = Array.from(existing)
+      .filter((item) => !STRATEGY_ORDER.includes(item))
+      .sort((a, b) => a.localeCompare(b, "zh-CN"));
+    return [...ordered, ...extra];
+  }, [items]);
   const industries = useMemo(() => Array.from(new Set([
     ...items.map((item) => item.industry),
     ...(stocks.data?.items ?? []).map((item) => item.industry),
@@ -45,6 +53,10 @@ export function Dashboard() {
     .filter((item) => !strategy || item.strategy_name === strategy)
     .filter((item) => !industry || item.industry === industry)
     .sort(compareScoreDescending), [items, strategy, industry]);
+  const strategyCounts = useMemo(() => strategies.map((name) => ({
+    name,
+    count: items.filter((item) => item.strategy_name === name).length,
+  })), [items, strategies]);
 
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -86,6 +98,22 @@ export function Dashboard() {
             onIndustryChange={(value) => resetPageAnd(setIndustry, value)}
             onRefresh={() => void Promise.all([selections.mutate(), stocks.mutate()])}
           />
+
+          {strategyCounts.length > 0 && (
+            <section className="grid gap-3 sm:grid-cols-2">
+              {strategyCounts.map((item) => (
+                <button
+                  key={item.name}
+                  type="button"
+                  onClick={() => resetPageAnd(setStrategy, strategy === item.name ? "" : item.name)}
+                  className={`rounded-2xl border px-4 py-3 text-left shadow-sm transition ${strategy === item.name ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-200/80 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50/50"}`}
+                >
+                  <div className="text-sm font-semibold">{item.name}</div>
+                  <div className="mt-1 text-xs text-slate-400">{item.count} 条结果</div>
+                </button>
+              ))}
+            </section>
+          )}
 
           {error && (
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">

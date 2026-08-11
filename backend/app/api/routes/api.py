@@ -55,6 +55,16 @@ from ...schemas import (
 
 router = APIRouter(prefix="/api", tags=["API"])
 
+LEGACY_STRATEGY_ALIASES = {"追涨": ("追涨", "超短线技术共振")}
+
+
+def _canonical_strategy_name(value: str) -> str:
+    return "追涨" if value == "超短线技术共振" else value
+
+
+def _strategy_filter_values(value: str) -> tuple[str, ...]:
+    return LEGACY_STRATEGY_ALIASES.get(value, (value,))
+
 
 def _shanghai_iso(value: datetime) -> str:
     return value.replace(tzinfo=ZoneInfo("Asia/Shanghai")).isoformat()
@@ -76,7 +86,7 @@ def _selection_schema(
         current_price_as_of=_shanghai_iso(snapshot.as_of) if snapshot is not None else None,
         change_pct=signals.get("change_pct"),
         score=row.score,
-        strategy_name=row.strategy_name,
+        strategy_name=_canonical_strategy_name(row.strategy_name),
         industry=row.stock.industry or signals.get("industry"),
         turnover_rate=signals.get("turnover_rate"),
         board_count=signals.get("board_count"),
@@ -136,7 +146,7 @@ def list_selections(
     target = trade_date or date.today()
     statement = select(SelectionResultModel).join(Stock).where(SelectionResultModel.trade_date == target)
     if strategy:
-        statement = statement.where(SelectionResultModel.strategy_name == strategy)
+        statement = statement.where(SelectionResultModel.strategy_name.in_(_strategy_filter_values(strategy)))
     rows = session.scalars(statement.order_by(SelectionResultModel.score.desc())).unique().all()
     codes = [row.stock_code for row in rows]
     snapshots = {
@@ -173,7 +183,7 @@ def selection_performance(
         .where(
             SelectionResultModel.stock_code == code,
             SelectionResultModel.trade_date == trade_date,
-            SelectionResultModel.strategy_name == strategy,
+            SelectionResultModel.strategy_name.in_(_strategy_filter_values(strategy)),
         )
     )
     if selection is None:
