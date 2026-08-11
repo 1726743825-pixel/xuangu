@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import re
 
 import pytest
 
@@ -52,6 +53,40 @@ def test_parse_official_report_only_applies_price_enricher(monkeypatch):
     assert [item["price"] for item in seen] == [None, None]
 
 
+def _expanded_report(tmp_path: Path, fixture: Path, prefix: str, count: int) -> Path:
+    html = fixture.read_text(encoding="utf-8")
+    rows = re.findall(r"<tr>.*?</tr>", html, flags=re.S)
+    assert len(rows) >= 2
+    template = rows[1]
+    generated = []
+    for index in range(count):
+        code = f"{int(prefix) + index:06d}"
+        row = re.sub(r"<td>1</td>", f"<td>{index + 1}</td>", template, count=1)
+        row = re.sub(r">\d{6}<", f">{code}<", row, count=1)
+        generated.append(row)
+    expanded = re.sub(
+        r"(<tr>.*?</tr>)(?:\s*<tr>.*?</tr>)+",
+        lambda match: match.group(1) + "\n" + "\n".join(generated),
+        html,
+        count=1,
+        flags=re.S,
+    )
+    path = tmp_path / fixture.name
+    path.write_text(expanded, encoding="utf-8")
+    return path
+
+
+def test_parse_official_report_imports_only_top_ten(monkeypatch, tmp_path):
+    monkeypatch.setattr(selection_script, "fill_missing_selection_prices", lambda items: items)
+    report = _expanded_report(tmp_path, FIXTURE_PATH, "300100", 12)
+
+    items = selection_script.parse_official_report(report)
+
+    assert len(items) == 10
+    assert items[0]["code"] == "300100"
+    assert items[-1]["code"] == "300109"
+
+
 def test_parse_chaodie_report_normalises_130_point_score():
     items = selection_script.parse_chaodie_report(CHAODIE_FIXTURE_PATH, "2026-08-11")
 
@@ -68,6 +103,15 @@ def test_parse_chaodie_report_normalises_130_point_score():
     assert first["indicators"]["raw_score"] == 71.7
     assert first["indicators"]["raw_score_max"] == 130
     assert first["indicators"]["official_details"].startswith("财务")
+
+
+def test_parse_chaodie_report_imports_only_top_ten(tmp_path):
+    report = _expanded_report(tmp_path, CHAODIE_FIXTURE_PATH, "301400", 12)
+
+    items = selection_script.parse_chaodie_report(report, "2026-08-11")
+
+    assert len(items) == 10
+    assert all(item["strategy_name"] == "超跌" for item in items)
 
 
 def test_parse_official_report_rejects_reports_without_rows(tmp_path):

@@ -12,7 +12,7 @@
 | `source/` | 原始 Node.js 脚本、配置和资料 | 只读保留；必须先经受控包装器转换输出 |
 | `README.md` | 本目录的接入契约 | 与 `../docs/api-contract.md` 保持一致 |
 
-`selection_script.py` 是供国内网络本机运行的适配器：它依次执行 `D:\Program Files\xuangu\zhuizhang\stock_screener.js`（strategy_name=`追涨`）和 `D:\Program Files\xuangu\chaodie\chaodie_screener.js`（strategy_name=`超跌`），然后解析各自新生成的 HTML 报告，返回可直接作为 `/api/selections/import` 的 `items`。它不连接 Railway 数据库、不拉取项目行情，也不重算 MA/MACD/KDJ 或任何内部策略评分；评分、评级和明细完全以 D 盘正式脚本为准。超跌报告原始 130 分制会归一化到导入 API 的 0–100 分，并在 `indicators.raw_score/raw_score_max` 保留原始分。D 盘资产只读。生产端 `builtin.enabled=false` 且 custom 动态加载关闭，防止 Railway 回退执行内部策略。
+`selection_script.py` 是供国内网络本机运行的适配器：它依次执行 `D:\Program Files\xuangu\zhuizhang\stock_screener.js`（strategy_name=`追涨`）和 `D:\Program Files\xuangu\chaodie\chaodie_screener.js`（strategy_name=`超跌`），然后解析各自新生成的 HTML 报告，每套策略最多返回前 10 只，作为 `/api/selections/import` 的 `items`。它不连接 Railway 数据库、不拉取项目行情，也不重算 MA/MACD/KDJ 或任何内部策略评分；评分、评级和明细完全以 D 盘正式脚本为准。超跌报告原始 130 分制会归一化到导入 API 的 0–100 分，并在 `indicators.raw_score/raw_score_max` 保留原始分。D 盘资产只读。生产端 `builtin.enabled=false` 且 custom 动态加载关闭，防止 Railway 回退执行内部策略。
 
 在 `backend/` 目录执行：
 

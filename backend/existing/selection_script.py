@@ -30,6 +30,7 @@ DEFAULT_CHAODIE_DIR = DEFAULT_PROJECT_DIR / "chaodie"
 REPORT_DIRECTORY_NAME = "result"
 REPORT_GLOB = "选股结果*.html"
 CHAODIE_REPORT_GLOB = "超跌反弹*.html"
+IMPORT_RESULT_LIMIT = 10
 
 
 class LocalSelectionDataError(RuntimeError):
@@ -161,7 +162,7 @@ def parse_official_report(path: Path, expected_trade_date: str | None = None) ->
     # The report is the sole authority for its candidates, scores and metrics.
     # It omits a price column, so the data layer may only enrich the already
     # parsed rows with that report session's daily close.
-    return fill_missing_selection_prices(items)
+    return fill_missing_selection_prices(items[:IMPORT_RESULT_LIMIT])
 
 
 def parse_chaodie_report(path: Path, expected_trade_date: str | None = None) -> list[dict[str, Any]]:
@@ -220,7 +221,7 @@ def parse_chaodie_report(path: Path, expected_trade_date: str | None = None) -> 
         })
     if not items:
         raise LocalSelectionDataError(f"超跌报告未包含可导入的选股行: {path.name}")
-    return items
+    return items[:IMPORT_RESULT_LIMIT]
 
 
 def run_selection_from_report(report_path: str | Path, trade_date: str) -> list[dict[str, Any]]:
