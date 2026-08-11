@@ -508,6 +508,92 @@ async function getZTPremium() {
   return aStockData.getZTPremium();
 }
 
+function clampScore(value, min = 0, max = 1) {
+  if (value == null || isNaN(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function linearScore(value, vMin, vMax, maxScore = 1) {
+  if (value == null || isNaN(value)) return null;
+  if (value <= vMin) return 0;
+  if (value >= vMax) return maxScore;
+  return ((value - vMin) / (vMax - vMin)) * maxScore;
+}
+
+function inverseLinearScore(value, vMin, vMax, maxScore = 1) {
+  const score = linearScore(value, vMin, vMax, maxScore);
+  return score == null ? null : maxScore - score;
+}
+
+function sentimentCycleScore(greedIndex, maxScore = 5) {
+  if (greedIndex == null || isNaN(greedIndex)) return maxScore / 2;
+  const greed = clampScore(greedIndex);
+  if (greed <= 0.5) return maxScore;
+  const greedyStage = (greed - 0.5) / 0.5;
+  const linearPart = 1 - greedyStage;
+  const arcPart = Math.cos((Math.PI / 2) * greedyStage);
+  return maxScore * (0.55 * linearPart + 0.45 * arcPart);
+}
+
+function parseSinaQuotePayload(payload) {
+  const quotes = {};
+  if (!payload) return quotes;
+  const regex = /var hq_str_([a-zA-Z0-9_]+)="([^"]*)";/g;
+  let match;
+  while ((match = regex.exec(payload)) !== null) {
+    quotes[match[1]] = match[2].split(',');
+  }
+  return quotes;
+}
+
+function parseSinaGlobalIndex(fields) {
+  if (!fields || fields.length < 3) return null;
+  const pct = Number(fields[2]);
+  if (!Number.isFinite(pct)) return null;
+  return pct;
+}
+
+function parseSinaFutureChange(fields) {
+  if (!fields || fields.length < 8) return null;
+  const price = Number(fields[0]);
+  const prev = Number(fields[7]);
+  if (!Number.isFinite(price) || !Number.isFinite(prev) || prev <= 0) return null;
+  return ((price - prev) / prev) * 100;
+}
+
+async function getExternalEnvironment() {
+  const url = 'https://hq.sinajs.cn/list=gb_ixic,gb_dji,gb_inx,hf_GC,hf_CL';
+  const payload = await new Promise((resolve) => {
+    const req = https.get(url, {
+      timeout: 10000,
+      rejectUnauthorized: false,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://finance.sina.com.cn/'
+      }
+    }, res => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+  const quotes = parseSinaQuotePayload(payload);
+  const data = {
+    nasdaq: parseSinaGlobalIndex(quotes.gb_ixic),
+    dow: parseSinaGlobalIndex(quotes.gb_dji),
+    sp500: parseSinaGlobalIndex(quotes.gb_inx),
+    gold: parseSinaFutureChange(quotes.hf_GC),
+    oil: parseSinaFutureChange(quotes.hf_CL),
+  };
+  const available = Object.values(data).some(value => Number.isFinite(value));
+  return available ? data : null;
+}
+
 // ── 批量构建板块评分数据 ──
 
 /**
@@ -885,7 +971,7 @@ function checkHardFilters(stock, klines) {
 // 通用公式: 得分 = (实际值 - 零分阈值) / (满分阈值 - 零分阈值) × 满分
 // 低于零分阈值=0分, 高于满分阈值=满分
 
-function calcBaseScore(stock, klines, quote, sectorInfo, conceptInfo, marketInfo, flowInfo) {
+function calcBaseScore(stock, klines, quote, sectorInfo, conceptInfo, marketInfo, flowInfo, externalInfo) {
   const latest = klines[klines.length - 1];
   const prev = klines.length >= 2 ? klines[klines.length - 2] : latest;
 
@@ -1145,10 +1231,10 @@ function calcBaseScore(stock, klines, quote, sectorInfo, conceptInfo, marketInfo
   scores.flow2 = { score: score_flow2, max: 3, name: '大单净流入%', detail: flowInfo ? `${flowInfo.largeOrderPercent?.toFixed(2)}%` : '数据缺失' };
   details.push(`资金流: ${(score_flow1+score_flow2).toFixed(1)}/7`);
 
-  // ── 八、大盘情绪 (15 分) ──
-  // 上证涨幅(5分): V_min=-1%, V_max=1%, formula=(涨幅+1%)/2%×5。未站稳MA5最高3分。
-  // 涨跌比(5分): V_min=0.8, V_max=2.0
-  // 涨停溢价(5分): V_min=-2%, V_max=3%
+  // ── 八、大盘环境 (15 分) ──
+  // A股大盘(5分): 保留原三项逻辑，原 15 分按比例压缩为 5 分
+  // 情绪周期(5分): 极度恐慌/适中=满分，极度贪婪=0分，贪婪段用线性+弧线过渡
+  // 外围环境(5分): 纳指/道指/标普风险偏好 + 黄金/原油避险与成本压力
   let score_mkt1 = 0, score_mkt2 = 0, score_mkt3 = 0;
   if (marketInfo) {
     if (marketInfo.sseChangePercent != null) {
@@ -1161,10 +1247,47 @@ function calcBaseScore(stock, klines, quote, sectorInfo, conceptInfo, marketInfo
       score_mkt3 = linear(marketInfo.limitUpPremium, -2, 1.5, 5); // v2.3.0: 满分阈值从3%改为1.5%
     }
   }
-  scores.mkt1 = { score: score_mkt1, max: 5, name: '上证涨幅', detail: marketInfo ? `${marketInfo.sseChangePercent.toFixed(2)}%` : '数据缺失' };
-  scores.mkt2 = { score: score_mkt2, max: 5, name: '涨跌比', detail: marketInfo ? `${marketInfo.advDeclRatio.toFixed(2)}` : '数据缺失' };
-  scores.mkt3 = { score: score_mkt3, max: 5, name: '涨停溢价', detail: marketInfo ? `${marketInfo.limitUpPremium.toFixed(2)}%` : '数据缺失' };
-  details.push(`大盘: ${(score_mkt1+score_mkt2+score_mkt3).toFixed(1)}/15`);
+  const rawAshareScore = score_mkt1 + score_mkt2 + score_mkt3;
+  const score_mktA = rawAshareScore / 15 * 5;
+
+  const greedSse = marketInfo ? linear(marketInfo.sseChangePercent, -2, 2, 1) : null;
+  const greedBreadth = marketInfo ? linear(marketInfo.advDeclRatio, 0.5, 3.0, 1) : null;
+  const greedPremium = marketInfo ? linear(marketInfo.limitUpPremium, -3, 5, 1) : null;
+  const greedParts = [greedSse, greedBreadth, greedPremium].filter(value => value != null);
+  const greedIndex = greedParts.length ? greedParts.reduce((sum, value) => sum + value, 0) / greedParts.length : null;
+  const score_mktCycle = sentimentCycleScore(greedIndex, 5);
+
+  const scoreNasdaq = externalInfo ? linearScore(externalInfo.nasdaq, -2, 1, 1) : null;
+  const scoreDow = externalInfo ? linearScore(externalInfo.dow, -2, 1, 1) : null;
+  const scoreSp500 = externalInfo ? linearScore(externalInfo.sp500, -2, 1, 1) : null;
+  const scoreGold = externalInfo ? inverseLinearScore(externalInfo.gold, -1, 2, 1) : null;
+  const scoreOil = externalInfo ? inverseLinearScore(externalInfo.oil, -1.5, 1.5, 1) : null;
+  const externalParts = [scoreNasdaq, scoreDow, scoreSp500, scoreGold, scoreOil].filter(value => value != null);
+  const score_mktExternal = externalParts.length
+    ? externalParts.reduce((sum, value) => sum + value, 0) / externalParts.length * 5
+    : 2.5;
+
+  scores.mkt1 = {
+    score: score_mktA,
+    max: 5,
+    name: 'A股大盘',
+    detail: marketInfo ? `原逻辑${rawAshareScore.toFixed(1)}/15→${score_mktA.toFixed(1)}/5` : '数据缺失'
+  };
+  scores.mkt2 = {
+    score: score_mktCycle,
+    max: 5,
+    name: '情绪周期',
+    detail: greedIndex == null ? '数据缺失，中性2.5分' : `贪婪度${(greedIndex * 100).toFixed(0)}，适中以下满分，当前${score_mktCycle.toFixed(1)}/5`
+  };
+  scores.mkt3 = {
+    score: score_mktExternal,
+    max: 5,
+    name: '外围环境',
+    detail: externalInfo
+      ? `纳指${externalInfo.nasdaq?.toFixed?.(2) ?? '--'}% 道指${externalInfo.dow?.toFixed?.(2) ?? '--'}% 标普${externalInfo.sp500?.toFixed?.(2) ?? '--'}% 黄金${externalInfo.gold?.toFixed?.(2) ?? '--'}% 原油${externalInfo.oil?.toFixed?.(2) ?? '--'}%`
+      : '数据缺失，中性2.5分'
+  };
+  details.push(`大盘: ${(score_mktA+score_mktCycle+score_mktExternal).toFixed(1)}/15`);
 
   // 汇总基础分（四舍五入为整数）
   const baseScore = Math.round(score_ma1 + score_ma2 + score_ma3 +
@@ -1174,7 +1297,7 @@ function calcBaseScore(stock, klines, quote, sectorInfo, conceptInfo, marketInfo
     score_kline1 + score_kline2 + score_kline3 +
     score_sector1 + score_sector2 + score_sector3 +
     score_flow1 + score_flow2 +
-    score_mkt1 + score_mkt2 + score_mkt3);
+    score_mktA + score_mktCycle + score_mktExternal);
 
   return { baseScore, scores, details };
 }
@@ -1383,11 +1506,12 @@ async function main() {
 
   // ── 从东方财富 API 获取实时数据（替代硬编码和缺失数据）──
 
-  // 1. 获取大盘数据 + 涨停溢价（并行）
+  // 1. 获取大盘数据 + 涨停溢价 + 外围环境（并行）
   console.log('📡 获取大盘数据...');
-  const [marketRaw, premiumRaw] = await Promise.all([
+  const [marketRaw, premiumRaw, externalInfo] = await Promise.all([
     getMarketData(),
     getZTPremium(),
+    getExternalEnvironment(),
   ]);
   const marketInfo = marketRaw ? {
     sseChangePercent: marketRaw.sseChangePercent,
@@ -1400,6 +1524,11 @@ async function main() {
     console.log(`  ✅ 上证 ${marketRaw.price} ${marketRaw.sseChangePercent >= 0 ? '+' : ''}${marketRaw.sseChangePercent.toFixed(2)}% 涨:${marketRaw.riseCount} 跌:${marketRaw.fallCount} 溢价:${(premiumRaw ?? 0).toFixed(2)}%`);
   } else {
     console.log(`  ⚠️ 大盘数据获取失败，使用默认值`);
+  }
+  if (externalInfo) {
+    console.log(`  ✅ 外围 纳指${externalInfo.nasdaq?.toFixed?.(2) ?? '--'}% 道指${externalInfo.dow?.toFixed?.(2) ?? '--'}% 标普${externalInfo.sp500?.toFixed?.(2) ?? '--'}% 黄金${externalInfo.gold?.toFixed?.(2) ?? '--'}% 原油${externalInfo.oil?.toFixed?.(2) ?? '--'}%`);
+  } else {
+    console.log('  ⚠️ 外围环境数据获取失败，按中性处理');
   }
 
   // Step 1: 获取候选股
@@ -1456,7 +1585,7 @@ async function main() {
       mainForcePercent: stockDetail.mainForcePercent,
       largeOrderPercent: stockDetail.largeOrderPercent,
     } : null;
-    const { baseScore, scores, details } = calcBaseScore(stock, klines, quote, sectorInfo, null, marketInfo, flowInfo);
+    const { baseScore, scores, details } = calcBaseScore(stock, klines, quote, sectorInfo, null, marketInfo, flowInfo, externalInfo);
 
     // 计算加分项
     const { bonusTotal, bonusItems } = calcBonus(klines, stock, todaySSE, sectorInfo, policyConfig, stockDetail);
