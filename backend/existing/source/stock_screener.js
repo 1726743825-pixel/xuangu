@@ -465,13 +465,28 @@ function buildPolicyPrompt(news, role) {
   return { system, user: `请根据以下${news.length}条新闻生成确定性加分 JSON：\n${newsText}` };
 }
 
+function parseAiJsonContent(content) {
+  const text = String(content || '').trim();
+  if (!text) return null;
+  const candidates = [text];
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(text.slice(firstBrace, lastBrace + 1));
+  for (const candidate of candidates) {
+    try { return JSON.parse(candidate); } catch {}
+  }
+  return null;
+}
+
 async function refreshPolicyWithFreeModel(news) {
   if (!FREE_LLM_API_KEY) return { ok: false, reason: '未配置 CRECGZ_API_KEY' };
   if (news.length < 3) return { ok: false, reason: `每日新增新闻不足（仅 ${news.length} 条）` };
   const prompt = buildPolicyPrompt(news, '每日新闻初筛器');
   const buildPayload = model => JSON.stringify({ model, messages: [
     { role: 'system', content: prompt.system }, { role: 'user', content: prompt.user },
-  ], response_format: { type: 'json_object' }, temperature: 0, max_tokens: 1800 });
+  ], response_format: { type: 'json_object' }, temperature: 0, max_tokens: 5000 });
   let usedModel = FREE_LLM_MODEL;
   let payload = buildPayload(usedModel);
   let response = await requestJson(FREE_LLM_API_URL, { method: 'POST', headers: {
@@ -496,7 +511,8 @@ async function refreshPolicyWithFreeModel(news) {
     }, body: payload, timeout: POLICY_AGENT_TIMEOUT });
   }
   if (response.status !== 200) return { ok: false, reason: `${usedModel} HTTP ${response.status || '请求失败'}` };
-  let raw; try { raw = JSON.parse(response.data?.choices?.[0]?.message?.content); } catch { return { ok: false, reason: '免费模型未返回可解析 JSON' }; }
+  const raw = parseAiJsonContent(response.data?.choices?.[0]?.message?.content);
+  if (!raw) return { ok: false, reason: '免费模型未返回可解析 JSON' };
   const config = normalizeAiPolicyConfig(raw, news.length);
   if (!config) return { ok: false, reason: '免费模型配置校验失败' };
   config.version = `${formatDate(new Date())}-${usedModel}-daily-v1`;
@@ -534,8 +550,8 @@ async function refreshPolicyWithDeepSeek(newsInput = null) {
   if (response.status !== 200) return { ok: false, reason: `DeepSeek HTTP ${response.status || '请求失败'}` };
 
   const content = response.data?.choices?.[0]?.message?.content;
-  let aiConfig;
-  try { aiConfig = JSON.parse(content); } catch { return { ok: false, reason: 'DeepSeek 未返回可解析的 JSON 配置' }; }
+  const aiConfig = parseAiJsonContent(content);
+  if (!aiConfig) return { ok: false, reason: 'DeepSeek 未返回可解析的 JSON 配置' };
   const config = normalizeAiPolicyConfig(aiConfig, news.length);
   if (!config) return { ok: false, reason: 'DeepSeek 配置校验失败（重点行业少于3项或字段缺失）' };
   if (!writeJSONFileAtomic(SHORT_POLICY_SCORE_FILE, config)) return { ok: false, reason: '写入短期确定性配置失败' };
