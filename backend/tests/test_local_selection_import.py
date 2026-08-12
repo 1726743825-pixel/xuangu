@@ -148,9 +148,13 @@ def test_main_success_log_uses_actual_trade_date(monkeypatch, capsys):
     monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
     monkeypatch.setattr(local_import, "_import_selection_run", lambda *_args, **_kwargs: local_import.SelectionImportRun(10, "2026-08-07", _items("")))
     monkeypatch.setattr(local_import, "_sync_selected_market_data", lambda *_: (120, 240, 4, 10))
+    monkeypatch.setattr(local_import, "_refresh_recent_existing_market_data", lambda *_args, **_kwargs: (2, 240, 480, 8, 20))
 
     assert local_import.main(["--trade-date", "2026-08-07", "--env-file", "unused.env"]) == 0
-    assert "trade_date=2026-08-07, selections=10, daily_quotes=120, intraday_30m_quotes=240, indices=4, stocks=10" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "trade_date=2026-08-07, selections=10, daily_quotes=120, intraday_30m_quotes=240, indices=4, stocks=10" in output
+    assert "refreshed_existing_dates=2" in output
+    assert "refreshed_daily_quotes=240" in output
 
 
 def test_main_passes_replace_flag_only_when_requested(monkeypatch):
@@ -163,6 +167,7 @@ def test_main_passes_replace_flag_only_when_requested(monkeypatch):
 
     monkeypatch.setattr(local_import, "_import_selection_run", selection_run)
     monkeypatch.setattr(local_import, "_sync_selected_market_data", lambda *_: (1, 1, 4, 1))
+    monkeypatch.setattr(local_import, "_refresh_recent_existing_market_data", lambda *_args, **_kwargs: (0, 0, 0, 0, 0))
     assert local_import.main(["--trade-date", "2026-08-07", "--replace-existing", "--env-file", "unused.env"]) == 0
     assert captured["replace_existing"] is True
 
@@ -569,6 +574,33 @@ def test_market_sync_reports_components_independently(monkeypatch):
         local_import._sync_selected_market_data("2026-08-07", _items(""))
     assert calls == ["intraday", ("snapshots", [])]
     assert all(label in str(error.value) for label in ("日K:", "30m K:", "指数/当前价:"))
+
+
+def test_daily_run_refreshes_recent_existing_dates_except_current(monkeypatch):
+    monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
+    synced: list[str] = []
+
+    def selection_run(*_args, **_kwargs):
+        return local_import.SelectionImportRun(10, "2026-08-12", _items(""))
+
+    def existing_dates(end_date, *, lookback_days):
+        assert end_date == "2026-08-12"
+        assert lookback_days == local_import.DEFAULT_REFRESH_LOOKBACK_DAYS
+        return ["2026-08-10", "2026-08-11", "2026-08-12"]
+
+    monkeypatch.setattr(local_import, "_import_selection_run", selection_run)
+    monkeypatch.setattr(local_import, "_existing_selection_dates", existing_dates)
+    monkeypatch.setattr(local_import, "_load_existing_selection_items", lambda date_value: _items(date_value))
+    monkeypatch.setattr(local_import, "_backfill_existing_selection_prices", lambda _date, items: (items, 0))
+
+    def sync_market_data(trade_date, _items):
+        synced.append(trade_date)
+        return (120, 480, 4, 10)
+
+    monkeypatch.setattr(local_import, "_sync_selected_market_data", sync_market_data)
+
+    assert local_import.main(["--trade-date", "2026-08-12", "--env-file", "unused.env"]) == 0
+    assert synced == ["2026-08-12", "2026-08-10", "2026-08-11"]
 
 
 def test_refresh_powershell_does_not_embed_token_or_modify_daily_task():

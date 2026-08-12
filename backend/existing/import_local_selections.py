@@ -30,6 +30,7 @@ from app.data import akshare_local, market_data
 
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+DEFAULT_REFRESH_LOOKBACK_DAYS = 10
 
 
 class SelectionImportError(RuntimeError):
@@ -584,6 +585,25 @@ def _load_existing_selection_items(
     return items
 
 
+def _existing_selection_dates(
+    end_date: str,
+    *,
+    lookback_days: int = DEFAULT_REFRESH_LOOKBACK_DAYS,
+    loader: Callable[[str], list[dict]] = _load_existing_selection_items,
+) -> list[str]:
+    """Return recent dates that already have selections and should keep charts fresh."""
+    target = date.fromisoformat(end_date)
+    dates: list[str] = []
+    for offset in range(lookback_days + 1):
+        current = (target - timedelta(days=offset)).isoformat()
+        try:
+            loader(current)
+        except SelectionImportError:
+            continue
+        dates.append(current)
+    return sorted(set(dates))
+
+
 def _backfill_existing_selection_prices(
     trade_date: str,
     items: list[dict],
@@ -670,6 +690,33 @@ def _sync_selected_market_data(trade_date: str, items: list[dict]) -> tuple[int,
     return daily_count, intraday_count, index_count, stock_count
 
 
+def _refresh_recent_existing_market_data(
+    end_date: str,
+    *,
+    lookback_days: int = DEFAULT_REFRESH_LOOKBACK_DAYS,
+    exclude_dates: set[str] | None = None,
+    date_loader: Callable[..., list[str]] | None = None,
+) -> tuple[int, int, int, int, int]:
+    """Keep previously selected stocks' detail charts updated after a daily run."""
+    daily_total = intraday_total = index_total = stock_total = refreshed_dates = 0
+    excluded = exclude_dates or set()
+    loader = date_loader or _existing_selection_dates
+    for refresh_date in loader(end_date, lookback_days=lookback_days):
+        if refresh_date in excluded:
+            continue
+        items = _load_existing_selection_items(refresh_date)
+        items, _fixed_price_count = _backfill_existing_selection_prices(refresh_date, items)
+        daily_count, intraday_count, index_count, stock_count = _sync_selected_market_data(
+            refresh_date, items
+        )
+        daily_total += daily_count
+        intraday_total += intraday_count
+        index_total += index_count
+        stock_total += stock_count
+        refreshed_dates += 1
+    return refreshed_dates, daily_total, intraday_total, index_total, stock_total
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="本地选股并导入 Railway")
     parser.add_argument("--trade-date", default=date.today().isoformat(), help="交易日 YYYY-MM-DD（默认今天）")
@@ -710,6 +757,15 @@ def main(argv: list[str] | None = None) -> int:
         quote_count, intraday_quote_count, index_count, stock_count = _sync_selected_market_data(
             selection_run.trade_date, selection_run.items
         )
+        (
+            refreshed_dates,
+            refreshed_daily_count,
+            refreshed_intraday_quote_count,
+            refreshed_index_count,
+            refreshed_stock_count,
+        ) = _refresh_recent_existing_market_data(
+            selection_run.trade_date, exclude_dates={selection_run.trade_date}
+        )
     except (SelectionImportError, LocalSelectionDataError, ValueError) as exc:
         print(f"本地选股导入失败: {exc}", file=sys.stderr)
         return 1
@@ -717,7 +773,11 @@ def main(argv: list[str] | None = None) -> int:
         "本地选股与K线导入成功: "
         f"trade_date={selection_run.trade_date}, selections={selection_run.count}, "
         f"daily_quotes={quote_count}, intraday_30m_quotes={intraday_quote_count}, "
-        f"indices={index_count}, stocks={stock_count}"
+        f"indices={index_count}, stocks={stock_count}; "
+        f"refreshed_existing_dates={refreshed_dates}, "
+        f"refreshed_daily_quotes={refreshed_daily_count}, "
+        f"refreshed_intraday_30m_quotes={refreshed_intraday_quote_count}, "
+        f"refreshed_indices={refreshed_index_count}, refreshed_stocks={refreshed_stock_count}"
     )
     return 0
 
