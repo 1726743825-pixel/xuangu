@@ -25,7 +25,7 @@ def test_parse_official_report_preserves_authoritative_fields(monkeypatch):
     first = items[0]
     assert first["code"] == "301080"
     assert first["name"] == "百普赛斯"
-    assert first["industry"] == "生物制品"
+    assert first["industry"] == "生物制品 | 独家药品 | 医疗器械概念"
     assert first["trade_date"] == "2026-08-09"
     assert first["strategy_name"] == "追涨"
     assert first["score"] == 87.0

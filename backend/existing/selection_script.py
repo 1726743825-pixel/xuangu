@@ -45,21 +45,29 @@ class _ReportTableParser(HTMLParser):
         self.rows: list[list[str]] = []
         self._row: list[str] | None = None
         self._cell: list[str] | None = None
+        self._cell_parts: list[str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "tr":
             self._row = []
         elif tag in {"td", "th"} and self._row is not None:
             self._cell = []
+            self._cell_parts = []
 
     def handle_data(self, data: str) -> None:
         if self._cell is not None:
-            self._cell.append(data)
+            text = " ".join(data.split())
+            if text:
+                self._cell.append(text)
+                if self._cell_parts is not None:
+                    self._cell_parts.append(text)
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"td", "th"} and self._row is not None and self._cell is not None:
-            self._row.append(" ".join("".join(self._cell).split()))
+            parts = self._cell_parts or self._cell
+            self._row.append(" | ".join(parts))
             self._cell = None
+            self._cell_parts = None
         elif tag == "tr" and self._row is not None:
             if self._row:
                 self.rows.append(self._row)
