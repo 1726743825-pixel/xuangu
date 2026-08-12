@@ -6,17 +6,19 @@ import useSWR from "swr";
 import { apiUrl, fetcher, getShanghaiToday } from "./api";
 import { DashboardFilters } from "./DashboardFilters";
 import { Pagination } from "./Pagination";
-import { StockTable } from "./StockTable";
+import { displayScore, StockTable } from "./StockTable";
 import type { SelectionItem, SelectionPage, StockPage } from "./types";
 
 const PAGE_SIZE = 10;
 const STRATEGY_ORDER = ["追涨", "超跌"];
 
 function compareScoreDescending(a: SelectionItem, b: SelectionItem) {
-  if (a.score == null && b.score == null) return a.code.localeCompare(b.code, "zh-CN", { numeric: true });
-  if (a.score == null) return 1;
-  if (b.score == null) return -1;
-  return b.score - a.score || a.code.localeCompare(b.code, "zh-CN", { numeric: true });
+  const scoreA = displayScore(a);
+  const scoreB = displayScore(b);
+  if (scoreA == null && scoreB == null) return a.code.localeCompare(b.code, "zh-CN", { numeric: true });
+  if (scoreA == null) return 1;
+  if (scoreB == null) return -1;
+  return scoreB - scoreA || a.code.localeCompare(b.code, "zh-CN", { numeric: true });
 }
 
 export function Dashboard() {

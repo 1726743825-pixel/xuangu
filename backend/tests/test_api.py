@@ -223,6 +223,8 @@ def test_selection_import_preserves_local_display_fields_and_js_aliases(monkeypa
         "code": "300701", "name": "工大高科", "trade_date": "2030-02-01",
         "price": 18.65, "selection_price": 18.65, "selection_price_date": "2030-02-01",
         "current_price": None, "current_price_as_of": None, "change_pct": 4.21, "score": 92.0,
+        "display_score": 92.0, "display_score_max": 100.0,
+        "rating_level": None, "rating": None,
         "strategy_name": "追涨", "industry": "软件开发",
         "turnover_rate": 12.8, "board_count": 2,
         "reasons": ["量价共振"], "indicators": {},
@@ -262,9 +264,9 @@ def test_market_data_imports_do_not_clear_selection_industry(monkeypatch):
         stocks = client.get("/api/stocks?size=100")
 
     assert selections.status_code == 200
-    assert selections.json()["data"]["items"][0]["industry"] == "化学制药 / 生物疫苗"
+    assert selections.json()["data"]["items"][0]["industry"] == "化学制药 | 生物疫苗"
     stock = next(item for item in stocks.json()["data"]["items"] if item["code"] == "300703")
-    assert stock["industry"] == "化学制药 / 生物疫苗"
+    assert stock["industry"] == "化学制药 | 生物疫苗"
 
 
 def test_selection_list_uses_signal_industry_when_stock_industry_is_missing(monkeypatch):
@@ -279,6 +281,35 @@ def test_selection_list_uses_signal_industry_when_stock_industry_is_missing(monk
 
     assert response.status_code == 200
     assert response.json()["data"]["items"][0]["industry"] == "化学制药"
+
+
+def test_selection_list_exposes_display_score_rating_and_normalises_industry(monkeypatch):
+    trade_date = "2030-02-04"
+    db.save_selections([{
+        "code": "300706", "name": "超跌展示", "trade_date": trade_date, "score": 55.153846,
+        "strategy_name": "超跌", "industry": None,
+        "signals": {
+            "industry": "电子化学品Ⅱ / 半导体， 消费电子",
+            "reasons": [],
+            "indicators": {
+                "raw_score": 71.7,
+                "raw_score_max": 130,
+                "rating_level": "B",
+                "rating": "轻仓",
+            },
+        },
+    }])
+    with TestClient(app) as client:
+        response = client.get(f"/api/selections?date={trade_date}&strategy=超跌")
+
+    assert response.status_code == 200
+    item = response.json()["data"]["items"][0]
+    assert item["score"] == 55.153846
+    assert item["display_score"] == 71.7
+    assert item["display_score_max"] == 130
+    assert item["rating_level"] == "B"
+    assert item["rating"] == "轻仓"
+    assert item["industry"] == "电子化学品Ⅱ | 半导体 | 消费电子"
 
 
 def test_selection_performance_uses_real_kline_positions_and_reports_missing_future_data(monkeypatch):

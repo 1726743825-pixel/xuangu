@@ -24,6 +24,71 @@ function strategyBadgeClass(strategyName: string) {
     : "bg-indigo-50 text-indigo-700 ring-indigo-200";
 }
 
+function numericIndicator(item: SelectionItem, key: string) {
+  const value = item.indicators?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function textIndicator(item: SelectionItem, key: string) {
+  const value = item.indicators?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function displayScore(item: SelectionItem) {
+  if (typeof item.display_score === "number" && Number.isFinite(item.display_score)) return item.display_score;
+  if (item.strategy_name === "超跌") return numericIndicator(item, "raw_score") ?? item.score;
+  return item.score;
+}
+
+function scoreText(item: SelectionItem) {
+  const value = displayScore(item);
+  if (value == null) return "—";
+  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
+}
+
+function fallbackRatingLevel(item: SelectionItem) {
+  const score = displayScore(item);
+  if (score == null) return null;
+  const max = item.display_score_max ?? numericIndicator(item, "raw_score_max") ?? 100;
+  const pct = max > 0 ? score / max : score / 100;
+  if (pct >= 0.9) return "S";
+  if (pct >= 0.8) return "A";
+  if (pct >= 0.65) return "B";
+  if (pct >= 0.5) return "C";
+  return "D";
+}
+
+function ratingLevel(item: SelectionItem) {
+  return (item.rating_level ?? textIndicator(item, "rating_level") ?? fallbackRatingLevel(item))?.slice(0, 1).toUpperCase() ?? null;
+}
+
+function ratingClass(level: string) {
+  switch (level) {
+    case "S":
+      return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700";
+    case "A":
+      return "border-orange-200 bg-orange-50 text-orange-700";
+    case "B":
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    case "C":
+      return "border-sky-200 bg-sky-50 text-sky-700";
+    default:
+      return "border-slate-200 bg-slate-50 text-slate-500";
+  }
+}
+
+function normalizeIndustryText(value: string | null) {
+  if (!value) return "未分类";
+  const trimmed = value.trim();
+  if (!trimmed) return "未分类";
+  if (trimmed.includes("|")) {
+    return trimmed.split("|").map((item) => item.trim()).filter(Boolean).join(" | ");
+  }
+  return trimmed
+    .replace(/[、，,／/]+/g, " | ")
+    .replace(/\s*\|\s*/g, " | ");
+}
+
 function detailHref(item: SelectionItem) {
   const query = new URLSearchParams({ date: item.trade_date, strategy: item.strategy_name });
   return `/stock/${encodeURIComponent(item.code)}?${query.toString()}`;
@@ -41,7 +106,7 @@ export function StockTable({ items, loading }: StockTableProps) {
           <col className="w-[84px]" />
           <col className="w-[120px]" />
           <col className="w-[120px]" />
-          <col className="w-[100px]" />
+          <col className="w-[120px]" />
           <col className="w-[260px]" />
           <col className="w-[100px]" />
         </colgroup>
@@ -62,7 +127,10 @@ export function StockTable({ items, loading }: StockTableProps) {
             <tr key={index} className="animate-pulse">
               <td colSpan={8} className="px-5 py-4"><div className="h-5 rounded bg-slate-100" /></td>
             </tr>
-          )) : items.length ? items.map((item) => (
+          )) : items.length ? items.map((item) => {
+            const level = ratingLevel(item);
+            const industry = normalizeIndustryText(item.industry);
+            return (
             <tr
               key={`${item.code}-${item.strategy_name}`}
               className="cursor-pointer bg-white transition hover:bg-indigo-50/40 focus-within:bg-indigo-50/40"
@@ -88,8 +156,13 @@ export function StockTable({ items, loading }: StockTableProps) {
               <td className={`whitespace-nowrap px-3 py-4 text-center font-mono text-sm font-semibold ${item.change_pct == null || item.change_pct === 0 ? "text-slate-500" : item.change_pct > 0 ? "text-red-500" : "text-emerald-600"}`}>
                 {formatChange(item.change_pct)}
               </td>
-              <td className="whitespace-nowrap px-3 py-4 text-center font-mono text-sm font-semibold text-slate-700">{item.score == null ? "—" : item.score.toFixed(0)}</td>
-              <td className="truncate px-3 py-4 text-center text-sm text-slate-500" title={item.industry ?? "未分类"}>{item.industry ?? "未分类"}</td>
+              <td className="whitespace-nowrap px-3 py-4 text-center">
+                <span className="inline-flex items-center justify-center gap-1.5 font-mono text-sm font-semibold text-slate-700">
+                  {scoreText(item)}
+                  {level && <span className={`inline-flex h-5 min-w-5 items-center justify-center rounded border px-1 text-[11px] font-bold leading-none ${ratingClass(level)}`}>{level}</span>}
+                </span>
+              </td>
+              <td className="truncate px-3 py-4 text-center text-sm text-slate-500" title={industry}>{industry}</td>
               <td className="whitespace-nowrap px-3 py-4 text-center">
                 <Link
                   className="inline-flex rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600"
@@ -100,7 +173,7 @@ export function StockTable({ items, loading }: StockTableProps) {
                 </Link>
               </td>
             </tr>
-          )) : (
+          ); }) : (
             <tr>
               <td colSpan={8} className="px-5 py-16 text-center">
                 <p className="font-medium text-slate-700">没有找到选股结果</p>

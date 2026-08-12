@@ -9,9 +9,13 @@ export type SelectionItem = {
   current_price_as_of: string | null;
   change_pct: number | null;
   score: number | null;
+  display_score?: number | null;
+  display_score_max?: number | null;
   strategy_name: string;
   industry: string | null;
   reasons: string[];
+  rating_level?: string | null;
+  rating?: string | null;
   indicators: Record<string, unknown>;
 };
 

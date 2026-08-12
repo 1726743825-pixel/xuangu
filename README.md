@@ -159,6 +159,15 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 追涨和超跌每套策略最多导入排名前 10 只。追涨报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果。超跌报告为 130 分制，导入时会将 `score` 归一化到 0–100，并在 `indicators.raw_score/raw_score_max` 保留原始分。报告自带价格时优先保留；否则用报告日期之前最近一个真实 AKShare 日K收盘作为 `selection_price`，同时保存该 bar 的 `selection_price_date`。当前价也来自最近真实日K，时间固定为该 bar 日期的收盘时刻；周末报告不会被标记成周末实时行情。行情同步只服务展示和收益计算，不参与候选股计算。
 
+消息面/政策加分缓存由本机追涨脚本维护，缓存文件保存在 `D:\Program Files\xuangu\policy_scores_daily.json`、`policy_scores_short.json`、`policy_news_cursor.json` 和 `policy_news_archive.json`。除收盘选股会自动尝试刷新外，也可以用独立入口每 6 小时刷新一次，不运行选股、不上传结果：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\run-local-policy-refresh.ps1
+```
+
+如需注册 Windows 计划任务，建议使用当前 Windows 用户、工作目录设为项目根目录，触发器为每日每 6 小时重复；该任务只刷新消息面缓存。Qwen3-Instruct 作为主模型，DeepSeek 作为失败兜底和 7 天复核。日志默认写入 `logs\policy-refresh-*.log`，不得输出任何 API key。
+
 如需为已经入库的历史/周末官方报告补齐行情，使用独立受控命令；它只读取该日期现有选股，不运行 D 盘 Node、不重新选股、不替换或删除任何结果：
 
 ```powershell

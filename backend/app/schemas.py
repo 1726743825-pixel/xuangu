@@ -45,6 +45,10 @@ class SelectionResult(BaseModel):
     current_price_as_of: datetime | None = None
     change_pct: float | None = None
     score: float | None = None
+    display_score: float | None = None
+    display_score_max: float | None = None
+    rating_level: str | None = None
+    rating: str | None = None
     strategy_name: str = "默认策略"
     industry: str | None = None
     turnover_rate: float | None = None

@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from math import isfinite
 import os
+import re
 import secrets
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -70,11 +71,41 @@ def _shanghai_iso(value: datetime) -> str:
     return value.replace(tzinfo=ZoneInfo("Asia/Shanghai")).isoformat()
 
 
+_MISSING_INDUSTRY_VALUES = {"", "未分类", "--", "-", "无", "null", "none", "nan"}
+
+
+def _clean_industry(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text.lower() in _MISSING_INDUSTRY_VALUES:
+        return None
+    parts = [
+        part.strip()
+        for part in re.split(r"\s*(?:\||/|／|,|，|、|;|；)\s*|\s{2,}", text)
+        if part.strip() and part.strip().lower() not in _MISSING_INDUSTRY_VALUES
+    ]
+    deduped = list(dict.fromkeys(parts or [text]))
+    return " | ".join(deduped) if deduped else None
+
+
+def _display_score_fields(score: float | None, indicators: dict) -> tuple[float | None, float | None]:
+    raw_score = indicators.get("raw_score")
+    raw_max = indicators.get("raw_score_max")
+    if isinstance(raw_score, (int, float)) and isfinite(float(raw_score)):
+        max_value = float(raw_max) if isinstance(raw_max, (int, float)) and isfinite(float(raw_max)) else 130.0
+        return float(raw_score), max_value
+    return score, 100.0 if score is not None else None
+
+
 def _selection_schema(
     row: SelectionResultModel, snapshot: StockQuoteSnapshot | None = None
 ) -> SelectionResult:
     signals = row.signals or {}
+    indicators = signals.get("indicators", {}) if isinstance(signals.get("indicators", {}), dict) else {}
     selection_price = float(row.selection_price) if row.selection_price is not None else None
+    score = float(row.score) if row.score is not None else None
+    display_score, display_score_max = _display_score_fields(score, indicators)
     return SelectionResult(
         code=row.stock_code,
         name=row.stock.name,
@@ -85,13 +116,17 @@ def _selection_schema(
         current_price=float(snapshot.price) if snapshot is not None else None,
         current_price_as_of=_shanghai_iso(snapshot.as_of) if snapshot is not None else None,
         change_pct=signals.get("change_pct"),
-        score=row.score,
+        score=score,
+        display_score=display_score,
+        display_score_max=display_score_max,
+        rating_level=str(indicators.get("rating_level")) if indicators.get("rating_level") else None,
+        rating=str(indicators.get("rating")) if indicators.get("rating") else None,
         strategy_name=_canonical_strategy_name(row.strategy_name),
-        industry=row.stock.industry or signals.get("industry"),
+        industry=_clean_industry(row.stock.industry) or _clean_industry(signals.get("industry")),
         turnover_rate=signals.get("turnover_rate"),
         board_count=signals.get("board_count"),
         reasons=signals.get("reasons", []),
-        indicators=signals.get("indicators", {}),
+        indicators=indicators,
     )
 
 
@@ -259,6 +294,7 @@ def import_selections(
         {
             **item.model_dump(),
             "trade_date": target,
+            "industry": _clean_industry(item.industry),
             "selection_price_date": (
                 item.selection_price_date.isoformat() if item.selection_price_date else None
             ),
