@@ -22,6 +22,14 @@ function formatTurnover(value: number) {
   return `${(value / 100_000_000).toLocaleString("zh-CN", { maximumFractionDigits: 2 })} 亿`;
 }
 
+function dailyCloseChange(rows: BackendKlineRow[], index: number) {
+  if (index <= 0 || index >= rows.length) return null;
+  const previousClose = rows[index - 1]?.[2];
+  const currentClose = rows[index]?.[2];
+  if (!previousClose || !currentClose) return null;
+  return (currentClose / previousClose - 1) * 100;
+}
+
 /** Candlestick chart backed exclusively by API OHLCV rows. */
 export function KlineChart({ data, selectionDate, height = 620, className = "", loading = false, showForecast = true, emptyMessage = "暂无 K 线数据" }: KlineChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -42,21 +50,24 @@ export function KlineChart({ data, selectionDate, height = 620, className = "", 
       tooltip: {
         trigger: "axis", triggerOn: "mousemove|click", confine: true, axisPointer: { type: "cross" },
         formatter: (params: unknown) => {
-          const entries = Array.isArray(params) ? params as Array<{ axisValueLabel?: string; seriesName?: string; data?: unknown }> : [];
-          const candle = entries.find((entry) => entry.seriesName === "历史行情" && Array.isArray(entry.data))?.data as number[] | undefined;
+          const entries = Array.isArray(params) ? params as Array<{ axisValueLabel?: string; seriesName?: string; data?: unknown; dataIndex?: number }> : [];
+          const candleEntry = entries.find((entry) => entry.seriesName === "历史行情" && typeof entry.dataIndex === "number");
+          const dataIndex = candleEntry?.dataIndex ?? chartData.dates.indexOf(entries[0]?.axisValueLabel ?? "");
+          const row = dataIndex >= 0 && dataIndex < data.length ? data[dataIndex] : undefined;
           const forecast = entries.find((entry) => entry.seriesName === "技术情景预测")?.data as number | null | undefined;
           const lines = [entries[0]?.axisValueLabel ?? ""];
-          if (candle) {
-            const change = candle[0] === 0 ? null : (candle[1] / candle[0] - 1) * 100;
+          if (row) {
+            const [, open, close, low, high, volume] = row;
+            const change = dailyCloseChange(data, dataIndex);
             const changeLabel = change == null || change >= 0 ? "涨幅" : "跌幅";
             const changeColor = change == null || change >= 0 ? "#ef4444" : "#10b981";
             lines.push(
-              `开盘：${candle[0].toFixed(2)}`,
-              `收盘：${candle[1].toFixed(2)}`,
+              `开盘：${open.toFixed(2)}`,
+              `收盘：${close.toFixed(2)}`,
               change == null ? `${changeLabel}：—` : `<span style="color:${changeColor};font-weight:600">${changeLabel}：${Math.abs(change).toFixed(2)}%</span>`,
-              `最低：${candle[2].toFixed(2)}`,
-              `最高：${candle[3].toFixed(2)}`,
-              `成交额（亿）：${formatTurnover(candle[1] * (data[chartData.dates.indexOf(entries[0]?.axisValueLabel ?? "")]?.[5] ?? 0))}`,
+              `最低：${low.toFixed(2)}`,
+              `最高：${high.toFixed(2)}`,
+              `成交额（亿）：${formatTurnover(close * volume)}`,
             );
           }
           if (typeof forecast === "number") lines.push(`技术情景预测：${forecast.toFixed(2)}`, "仅为技术情景，非投资建议");
