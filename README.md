@@ -166,7 +166,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\run-local-policy-refresh.ps1
 ```
 
-如需注册 Windows 计划任务，建议使用当前 Windows 用户、工作目录设为项目根目录，触发器为每日每 6 小时重复；该任务只刷新消息面缓存。Qwen3-Instruct 作为主模型，DeepSeek 作为失败兜底和 7 天复核。日志默认写入 `logs\policy-refresh-*.log`，不得输出任何 API key。
+如需注册 Windows 计划任务，建议使用当前 Windows 用户、工作目录设为项目根目录，触发器为每日每 6 小时重复；该任务只刷新消息面缓存。Qwen3-Instruct 作为主模型，DeepSeek 作为失败兜底和 3 天复核。日志默认写入 `logs\policy-refresh-*.log`，不得输出任何 API key。
 
 如需为已经入库的历史/周末官方报告补齐行情，使用独立受控命令；它只读取该日期现有选股，不运行 D 盘 Node、不重新选股、不替换或删除任何结果：
 

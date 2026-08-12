@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * ============================================================
- *  超短线量化选股助手 v2.0
+ *  追涨量化选股助手 v2.0
  *  总资金：7万元
  *  仅交易：沪市主板(600/601/603) + 深市主板(000/001/002) + 创业板(300/301)
  *  禁止：科创板(688) / 北交所(8/4/43) / ST
@@ -15,6 +15,8 @@
  *
  * 数据源：
  *   a_stock_data_source.js（优先腾讯 / 百度股市通 / 东财限流方案）
+ * 共享缓存：
+ *   D:/Program Files/xuangu/policy_scores*.json 与 policy_news_*.json
  * ============================================================
  */
 'use strict';
@@ -27,8 +29,9 @@ const aStockData = require('./a_stock_data_source');
 
 // ── 配置 ──
 const TOTAL_FUNDS = 70000;               // 总资金 7 万元
-const OUTPUT_FILE = 'D:/Program Files/xuangu/result/选股结果.html';
-const MAX_CANDIDATES = Number.parseInt(process.env.MAX_CANDIDATES || '60', 10) || 60; // 最多详细分析的候选股
+const OUTPUT_DIR = path.join(__dirname, 'result');
+const MAX_CANDIDATES = Math.max(1, Number.parseInt(process.env.MAX_CANDIDATES || '60', 10) || 60); // 默认按优先级详细分析前60只；可用环境变量调整
+const RESULT_LIMIT = 10;                 // 输出排名前10名
 const KLINE_LIMIT = 150;                 // 获取 K 线天数（确保 MA60 有效）
 const SDK_TIMEOUT = 30000;               // shell 命令超时(ms)
 
@@ -39,9 +42,29 @@ const AUTO_UPDATE_CHECK = false;         // 已切换为 a-stock-data 数据源�
 // 检查日期：每月1-3日 和 15-17日（月初+月中）
 const UPDATE_CHECK_DAYS = [[1,2,3], [15,16,17]];
 const STOCK_DETAIL_FETCH_DELAY = 150;    // 东方财富详情请求间隔(ms)
-const POLICY_SCORE_URL = 'https://gist.githubusercontent.com/1726743825-pixel/be9bfb4c401fbe9a6d10e56b344c2875/raw/policy_scores.json';
+// 可通过环境变量切换为新的 raw JSON 地址，无需改脚本：POLICY_SCORE_URL / POLICY_SCORE_FALLBACK_URL。
+const POLICY_SCORE_URL = process.env.POLICY_SCORE_URL || 'https://gist.githubusercontent.com/1726743825-pixel/be9bfb4c401fbe9a6d10e56b344c2875/raw/policy_scores.json';
+const POLICY_SCORE_FALLBACK_URL = process.env.POLICY_SCORE_FALLBACK_URL || '';
 const LOCAL_POLICY_SCORE_FILE = 'D:/Program Files/xuangu/policy_scores.json';
+const SHORT_POLICY_SCORE_FILE = 'D:/Program Files/xuangu/policy_scores_short.json';
+const DAILY_POLICY_SCORE_FILE = 'D:/Program Files/xuangu/policy_scores_daily.json';
+const POLICY_NEWS_CURSOR_FILE = 'D:/Program Files/xuangu/policy_news_cursor.json';
+const POLICY_NEWS_ARCHIVE_FILE = 'D:/Program Files/xuangu/policy_news_archive.json';
 const POLICY_FETCH_TIMEOUT = 15000;
+const LONG_POLICY_MAX_AGE_DAYS = 90;      // 长期政策/产业趋势按季度复核，不被短期快讯覆盖
+const SHORT_POLICY_MAX_AGE_DAYS = 3;      // DeepSeek 每3天复核短期催化与公司模型分组
+const DEEPSEEK_REVIEW_MAX_AGE_DAYS = 3;
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
+const DEEPSEEK_API_URL = process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions';
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
+const FREE_LLM_API_KEY = process.env.CRECGZ_API_KEY || '';
+const FREE_LLM_API_URL = process.env.CRECGZ_API_URL || 'https://ai-api.crecgz.cn/v1/chat/completions';
+const FREE_LLM_MODEL = process.env.CRECGZ_MODEL || 'Qwen3-Instruct';
+const FREE_LLM_FALLBACK_MODEL = process.env.CRECGZ_FALLBACK_MODEL || 'deepseek-chat';
+const POLICY_EASTMONEY_NEWS_LIMIT = 80;
+const POLICY_THS_BOOTSTRAP_PAGES = 8;     // 首次建档：每频道约200条
+const POLICY_THS_INCREMENTAL_MAX_PAGES = 30; // 有游标后一直翻到游标，防止漏读
+const POLICY_AGENT_TIMEOUT = 120000;
 
 // ── 工具函数 ──
 
@@ -156,14 +179,384 @@ function writeJSONFile(filePath, data) {
   }
 }
 
+function writeJSONFileAtomic(filePath, data) {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(data, null, 2)}\n`, 'utf-8');
+    fs.renameSync(tempPath, filePath);
+    return true;
+  } catch {
+    try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath); } catch {}
+    return false;
+  }
+}
+
+function requestJson(url, { method = 'GET', headers = {}, body = null, timeout = 30000 } = {}) {
+  return new Promise((resolve) => {
+    const req = https.request(url, {
+      method,
+      timeout,
+      headers,
+    }, (res) => {
+      let raw = '';
+      res.setEncoding('utf-8');
+      res.on('data', chunk => { raw += chunk; });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode || 0, data: JSON.parse(raw), raw, error: null });
+        } catch {
+          resolve({ status: res.statusCode || 0, data: null, raw, error: '响应不是有效 JSON' });
+        }
+      });
+    });
+    req.on('error', error => resolve({ status: 0, data: null, raw: '', error: error.message }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ status: 0, data: null, raw: '', error: '请求超时' });
+    });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function requestText(url, { headers = {}, timeout = 30000, encoding = 'utf-8' } = {}) {
+  return new Promise((resolve) => {
+    const req = https.get(url, { timeout, headers }, (res) => {
+      const chunks = [];
+      res.on('data', chunk => { chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
+      res.on('end', () => {
+        let raw = '';
+        try { raw = new TextDecoder(encoding).decode(Buffer.concat(chunks)); } catch { raw = Buffer.concat(chunks).toString('utf-8'); }
+        resolve({ status: res.statusCode || 0, raw, error: null });
+      });
+    });
+    req.on('error', error => resolve({ status: 0, raw: '', error: error.message }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ status: 0, raw: '', error: '请求超时' });
+    });
+  });
+}
+
+// 东方财富“焦点”栏目（yw.html）聚合政策、产业和市场主线；不要使用噪声更高的 7×24（栏目102）。
+async function getEastmoneyFocusPolicyNews(pageSize = POLICY_EASTMONEY_NEWS_LIMIT) {
+  const params = new URLSearchParams({
+    client: 'web',
+    biz: 'web_724',
+    fastColumn: '101',
+    sortEnd: '',
+    pageSize: String(pageSize),
+    req_trace: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  });
+  const response = await requestJson(
+    `https://np-weblist.eastmoney.com/comm/web/getFastNewsList?${params.toString()}`,
+    {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Referer': 'https://kuaixun.eastmoney.com/yw.html',
+      },
+      timeout: 15000,
+    },
+  );
+  if (response.status !== 200 || !response.data) return [];
+  return (response.data?.data?.fastNewsList || []).map(item => ({
+    source: '东方财富焦点',
+    time: item.showTime || '',
+    title: item.title || '',
+    summary: String(item.summary || '').slice(0, 300),
+  })).filter(item => item.title || item.summary);
+}
+
+function decodeHtmlText(value) {
+  return String(value || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+function parseThsNews(html, source) {
+  const rows = [];
+  const re = /<li>\s*<span class="arc-title">[\s\S]*?title="([^"]+)"[\s\S]*?<span>([^<]+)<\/span>[\s\S]*?class="arc-cont news-link"[^>]*>([\s\S]*?)<\/a>\s*<\/li>/g;
+  for (const match of html.matchAll(re)) {
+    rows.push({
+      source,
+      title: decodeHtmlText(match[1]),
+      time: decodeHtmlText(match[2]),
+      summary: decodeHtmlText(match[3]).slice(0, 300),
+    });
+  }
+  return rows.filter(item => item.title);
+}
+
+function getNewsKey(item) {
+  return `${item.source || ''}|${item.time || ''}|${String(item.title || '').replace(/\s+/g, '')}`;
+}
+
+function readPolicyNewsState() {
+  const saved = readJSONFile(POLICY_NEWS_CURSOR_FILE);
+  return saved && typeof saved === 'object' ? saved : { version: 1, cursors: {} };
+}
+
+function appendPolicyNewsArchive(rows) {
+  const archive = readJSONFile(POLICY_NEWS_ARCHIVE_FILE);
+  const existing = Array.isArray(archive?.items) ? archive.items : [];
+  const keys = new Set(existing.map(getNewsKey));
+  const now = new Date().toISOString();
+  const added = rows.filter(row => {
+    const key = getNewsKey(row);
+    if (!key || keys.has(key)) return false;
+    keys.add(key);
+    return true;
+  }).map(row => ({ ...row, fetched_at: now }));
+  if (added.length) writeJSONFileAtomic(POLICY_NEWS_ARCHIVE_FILE, {
+    version: 1, updated_at: now, items: [...added, ...existing].slice(0, 8000),
+  });
+  return added;
+}
+
+async function getThsPolicyNews({ url, source, cursorKey = '', pages }) {
+  const rows = [];
+  let newestKey = '';
+  for (let page = 1; page <= pages; page++) {
+    const suffix = page === 1 ? '' : `?page=${page}`;
+    const response = await requestText(`${url}${suffix}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': url }, encoding: 'gb18030',
+      timeout: 15000,
+    });
+    const pageRows = response.status === 200 ? parseThsNews(response.raw, source) : [];
+    if (!newestKey && pageRows[0]) newestKey = getNewsKey(pageRows[0]);
+    const cursorAt = cursorKey ? pageRows.findIndex(row => getNewsKey(row) === cursorKey) : -1;
+    rows.push(...(cursorAt >= 0 ? pageRows.slice(0, cursorAt) : pageRows));
+    if (cursorAt >= 0 || pageRows.length < 25) break;
+    if (page < pages) await sleep(350); // 礼貌限速，避免对同花顺高频请求
+  }
+  return { rows, newestKey };
+}
+
+async function getPolicyNews() {
+  const state = readPolicyNewsState();
+  const channels = [
+    { id: 'ths-macro', source: '同花顺宏观经济', url: 'https://news.10jqka.com.cn/cjzx_list/' },
+    { id: 'ths-industry', source: '同花顺产经新闻', url: 'https://news.10jqka.com.cn/cjkx_list/' },
+  ];
+  const thsResults = await Promise.all(channels.map(channel => getThsPolicyNews({
+    ...channel,
+    cursorKey: state.cursors?.[channel.id]?.key || '',
+    pages: state.cursors?.[channel.id]?.key ? POLICY_THS_INCREMENTAL_MAX_PAGES : POLICY_THS_BOOTSTRAP_PAGES,
+  })));
+  const eastmoney = await getEastmoneyFocusPolicyNews();
+  const ths = thsResults.flatMap(result => result.rows);
+  const nextState = { version: 1, updated_at: new Date().toISOString(), cursors: { ...(state.cursors || {}) } };
+  thsResults.forEach((result, index) => {
+    if (result.newestKey) nextState.cursors[channels[index].id] = { key: result.newestKey, updated_at: nextState.updated_at };
+  });
+  writeJSONFileAtomic(POLICY_NEWS_CURSOR_FILE, nextState);
+  const seen = new Set();
+  const news = [...eastmoney, ...ths].filter(item => {
+    const key = getNewsKey(item);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  appendPolicyNewsArchive(news);
+  return news.slice(0, 240); // 每次模型输入上限；完整增量保留在本地归档中
+}
+
+function getArchivedPolicyNewsSince(updatedAt = '') {
+  const archive = readJSONFile(POLICY_NEWS_ARCHIVE_FILE);
+  const since = Date.parse(updatedAt || '1970-01-01');
+  return (archive?.items || []).filter(item => Date.parse(item.fetched_at || 0) > since).slice(0, 240);
+}
+
+function normalizeAiPolicyConfig(rawConfig, newsCount) {
+  if (!rawConfig || typeof rawConfig !== 'object') return null;
+  const defaultScores = getDefaultCertaintyScores();
+  const rawTopIndustries = (Array.isArray(rawConfig.top_industries) ? rawConfig.top_industries : [])
+    .filter(item => item && item.name)
+    .slice(0, 8)
+    .map(item => ({
+      name: String(item.name).slice(0, 60),
+      score: Math.max(0, Math.min(100, Number(item.score) || 0)),
+      level: ['S', 'A', 'B', 'C'].includes(String(item.level)) ? String(item.level) : 'B',
+      horizon: String(item.horizon) === 'long' ? 'long' : 'short',
+      evidence: String(item.evidence || '').slice(0, 600),
+    }));
+  const strongThemes = rawTopIndustries.filter(item => item.score >= 60);
+  const longThemes = strongThemes.filter(item => item.horizon === 'long');
+  const shortThemes = strongThemes.filter(item => item.horizon !== 'long');
+  const hasStrongEvidence = strongThemes.length >= 3;
+  const fallbackScoreValues = hasStrongEvidence
+    ? new Map([
+      ['国家战略支持', Math.min(1.5, longThemes.length >= 2 ? 1.0 : longThemes.length ? 0.6 : 0)],
+      ['地方配套政策', Math.min(1.5, strongThemes.some(item => /规划|政策|方案|试点|补贴|目录|支持/.test(item.evidence)) ? 0.8 : 0)],
+      ['机构持仓变动', Math.min(1, strongThemes.some(item => /机构|基金|ETF|摩根|持仓|申购|加仓/.test(item.evidence)) ? 0.6 : 0)],
+      ['主力资金/ETF流入', Math.min(1, strongThemes.some(item => /ETF|资金|流入|成交|涨停潮|活跃/.test(item.evidence)) ? 0.7 : 0)],
+      ['公司回购/分红', Math.min(1, strongThemes.some(item => /回购|分红/.test(item.evidence)) ? 0.5 : 0)],
+      ['高股息持续性', Math.min(1, strongThemes.some(item => /高股息|红利|分红/.test(item.evidence)) ? 0.5 : 0)],
+      ['业绩超预期', Math.min(1.5, strongThemes.some(item => /业绩|净利|营收|指引|超预期|预增/.test(item.evidence)) ? 1.0 : 0)],
+      ['盈利能力趋势', Math.min(1.5, strongThemes.some(item => /盈利|毛利|价格|供需|景气|短缺|涨价/.test(item.evidence)) ? 0.8 : 0)],
+      ['订单/合同增长', Math.min(1.5, strongThemes.some(item => /订单|合同|产能|预订|出口|销量/.test(item.evidence)) ? 0.9 : 0)],
+      ['研发强度', Math.min(1, strongThemes.some(item => /研发|模型|AI|芯片|创新|技术|智算/.test(item.evidence)) ? 0.5 : 0)],
+      ['产业地位', Math.min(1, strongThemes.some(item => /龙头|全球|国内|产业链|竞争力|市场/.test(item.evidence)) ? 0.6 : 0)],
+      ['产业落地进度', Math.min(1.5, strongThemes.some(item => /上线|投用|落地|扩产|商用|进入|发布/.test(item.evidence)) ? 1.0 : 0)],
+    ])
+    : new Map();
+  const rawScoreMap = new Map((Array.isArray(rawConfig.scores) ? rawConfig.scores : [])
+    .filter(item => item && item.name)
+    .map(item => [String(item.name), item]));
+  const scores = defaultScores.map(template => {
+    const incoming = rawScoreMap.get(template.name) || {};
+    const value = Number(incoming.value);
+    const fallbackValue = fallbackScoreValues.get(template.name) || 0;
+    return {
+      name: template.name,
+      max: template.max,
+      value: Number.isFinite(value)
+        ? Math.max(0, Math.min(template.max, value))
+        : fallbackValue,
+      detail: String(incoming.detail || (fallbackValue > 0
+        ? `模型识别 ${strongThemes.length} 个有效消息面方向，按证据关键词兜底计分`
+        : '本轮新闻未提供充分证据')).slice(0, 500),
+    };
+  });
+  const modelScoreTotal = scores.reduce((sum, item) => sum + Number(item.value || 0), 0);
+  const fallbackValueTotal = Array.from(fallbackScoreValues.values()).reduce((sum, value) => sum + value, 0);
+  const fallbackApplied = modelScoreTotal <= 0 && fallbackValueTotal > 0;
+  const finalScores = fallbackApplied
+    ? scores.map(item => {
+      const fallbackValue = fallbackScoreValues.get(item.name) || 0;
+      return fallbackValue > 0
+        ? { ...item, value: fallbackValue, detail: `模型识别了热点方向但未给加分池，本项按新闻证据兜底：${item.detail}` }
+        : item;
+    })
+    : scores;
+
+  const topIndustries = rawTopIndustries;
+  if (topIndustries.length < 3) return null;
+
+  const today = formatDate(new Date());
+  return {
+    version: `${today}-deepseek-short-v1`,
+    updated_at: today,
+    period: String(rawConfig.period || `截至${today}的近14日消息面`).slice(0, 100),
+    analysis_summary: String(rawConfig.analysis_summary || '').slice(0, 1000),
+    top_industries: topIndustries,
+    scores: finalScores,
+    refresh_meta: {
+      source: 'deepseek-short-term-auto-refresh',
+      model: DEEPSEEK_MODEL,
+      refreshed_at: new Date().toISOString(),
+      news_count: newsCount,
+      fallback_score_pool_applied: fallbackApplied,
+      long_theme_count: longThemes.length,
+      short_theme_count: shortThemes.length,
+    },
+  };
+}
+
+function buildPolicyPrompt(news, role) {
+  const newsText = news.map((item, index) =>
+    `${index + 1}. [${item.source} ${item.time}] ${item.title}${item.summary ? `：${item.summary}` : ''}`,
+  ).join('\n');
+  const system = `你是 A 股超短线的${role}。仅依据提供新闻输出 JSON，不得编造政策、资金、订单或业绩事实。每个 top_industries 项必须给出 horizon（long 或 short）：国家战略、地方投资规划、持续产业供需或盈利改善才可标 long；事件驱动、快讯、情绪催化标 short；纯噪声、重复报道、无法映射 A 股产业的消息必须剔除。旧 short 证据不足时必须删除或下调，不能长期加分；long 主题只有反向证据出现时才下调。JSON 必含 period、analysis_summary、top_industries、scores。top_industries 为3到8项，每项含 name、score(0-100)、level(S/A/B/C)、horizon、evidence。scores 必须包含现有12项，每项含 name、value、detail。若 top_industries 中存在3个以上score>=60的有效方向，scores 的12项不能全部为0，应按新闻证据给政策、资金、业绩、订单、研发、产业落地等维度分配0到max之间的谨慎分值；只有完全没有可验证利好证据时才允许全部为0。仅输出 JSON。`;
+  return { system, user: `请根据以下${news.length}条新闻生成确定性加分 JSON：\n${newsText}` };
+}
+
+async function refreshPolicyWithFreeModel(news) {
+  if (!FREE_LLM_API_KEY) return { ok: false, reason: '未配置 CRECGZ_API_KEY' };
+  if (news.length < 3) return { ok: false, reason: `每日新增新闻不足（仅 ${news.length} 条）` };
+  const prompt = buildPolicyPrompt(news, '每日新闻初筛器');
+  const buildPayload = model => JSON.stringify({ model, messages: [
+    { role: 'system', content: prompt.system }, { role: 'user', content: prompt.user },
+  ], response_format: { type: 'json_object' }, temperature: 0, max_tokens: 1800 });
+  let usedModel = FREE_LLM_MODEL;
+  let payload = buildPayload(usedModel);
+  let response = await requestJson(FREE_LLM_API_URL, { method: 'POST', headers: {
+    'Content-Type': 'application/json', 'Authorization': `Bearer ${FREE_LLM_API_KEY}`,
+    'Content-Length': Buffer.byteLength(payload),
+  }, body: payload, timeout: POLICY_AGENT_TIMEOUT });
+  if (response.status !== 200 && FREE_LLM_FALLBACK_MODEL && FREE_LLM_FALLBACK_MODEL !== usedModel) {
+    usedModel = FREE_LLM_FALLBACK_MODEL;
+    payload = buildPayload(usedModel);
+    response = await requestJson(FREE_LLM_API_URL, { method: 'POST', headers: {
+      'Content-Type': 'application/json', 'Authorization': `Bearer ${FREE_LLM_API_KEY}`,
+      'Content-Length': Buffer.byteLength(payload),
+    }, body: payload, timeout: POLICY_AGENT_TIMEOUT });
+  }
+  // 私有免费模型均不可用时，最后由外部 DeepSeek Flash 兜底，避免每日新闻链路中断。
+  if (response.status !== 200 && DEEPSEEK_API_KEY) {
+    usedModel = DEEPSEEK_MODEL;
+    payload = buildPayload(usedModel);
+    response = await requestJson(DEEPSEEK_API_URL, { method: 'POST', headers: {
+      'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+      'Content-Length': Buffer.byteLength(payload),
+    }, body: payload, timeout: POLICY_AGENT_TIMEOUT });
+  }
+  if (response.status !== 200) return { ok: false, reason: `${usedModel} HTTP ${response.status || '请求失败'}` };
+  let raw; try { raw = JSON.parse(response.data?.choices?.[0]?.message?.content); } catch { return { ok: false, reason: '免费模型未返回可解析 JSON' }; }
+  const config = normalizeAiPolicyConfig(raw, news.length);
+  if (!config) return { ok: false, reason: '免费模型配置校验失败' };
+  config.version = `${formatDate(new Date())}-${usedModel}-daily-v1`;
+  config.refresh_meta = { source: 'free-daily-news-screen', model: usedModel, refreshed_at: new Date().toISOString(), news_count: news.length };
+  if (!writeJSONFileAtomic(DAILY_POLICY_SCORE_FILE, config)) return { ok: false, reason: '写入每日初筛配置失败' };
+  return { ok: true, config, newsCount: news.length, model: usedModel };
+}
+
+async function refreshPolicyWithDeepSeek(newsInput = null) {
+  if (!DEEPSEEK_API_KEY) return { ok: false, reason: '未配置 DEEPSEEK_API_KEY' };
+  const news = newsInput || await getPolicyNews();
+  if (news.length < 8) return { ok: false, reason: `当前新闻源不足（仅 ${news.length} 条）` };
+
+  const prompt = buildPolicyPrompt(news, '政策与产业消息面复核器');
+  const payload = JSON.stringify({
+    model: DEEPSEEK_MODEL,
+    messages: [
+      { role: 'system', content: prompt.system },
+      { role: 'user', content: prompt.user },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+    max_tokens: 5000,
+  });
+  const response = await requestJson(DEEPSEEK_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+      'Content-Length': Buffer.byteLength(payload),
+    },
+    body: payload,
+    timeout: POLICY_AGENT_TIMEOUT,
+  });
+  if (response.status !== 200) return { ok: false, reason: `DeepSeek HTTP ${response.status || '请求失败'}` };
+
+  const content = response.data?.choices?.[0]?.message?.content;
+  let aiConfig;
+  try { aiConfig = JSON.parse(content); } catch { return { ok: false, reason: 'DeepSeek 未返回可解析的 JSON 配置' }; }
+  const config = normalizeAiPolicyConfig(aiConfig, news.length);
+  if (!config) return { ok: false, reason: 'DeepSeek 配置校验失败（重点行业少于3项或字段缺失）' };
+  if (!writeJSONFileAtomic(SHORT_POLICY_SCORE_FILE, config)) return { ok: false, reason: '写入短期确定性配置失败' };
+  return { ok: true, config, newsCount: news.length };
+}
+
 function fetchTextByCurl(url, timeout = POLICY_FETCH_TIMEOUT) {
   try {
-    return execSync(
-      `curl -sL --max-time ${Math.max(1, Math.floor(timeout / 1000))} "${url}"`,
+    const output = execSync(
+      `curl -sSL --max-time ${Math.max(1, Math.floor(timeout / 1000))} -w "\\n%{http_code}" "${url}"`,
       { timeout, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
-  } catch {
-    return null;
+    );
+    const splitAt = output.lastIndexOf('\n');
+    const status = Number.parseInt(output.slice(splitAt + 1).trim(), 10);
+    return {
+      body: splitAt >= 0 ? output.slice(0, splitAt).trim() : output.trim(),
+      status: Number.isFinite(status) ? status : null,
+      error: null,
+    };
+  } catch (e) {
+    return { body: null, status: null, error: e.message || 'curl 请求失败' };
   }
 }
 
@@ -182,34 +575,111 @@ function readLocalPolicyScoreConfig() {
   return Array.isArray(config?.scores) ? config : null;
 }
 
+function getPolicyAgeDays(config, now = new Date()) {
+  const updatedAt = String(config?.updated_at || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(updatedAt)) return null;
+  const updated = new Date(`${updatedAt}T00:00:00`);
+  if (Number.isNaN(updated.getTime())) return null;
+  return Math.floor((now.getTime() - updated.getTime()) / 86400000);
+}
+
+function buildPolicyState(config, source, url, attempts = [], maxAgeDays = LONG_POLICY_MAX_AGE_DAYS) {
+  const ageDays = getPolicyAgeDays(config);
+  const usable = Boolean(config) && ageDays != null && ageDays <= maxAgeDays;
+  const reason = !config
+    ? '未获取到有效配置'
+    : ageDays == null
+      ? '配置缺少有效 updated_at 日期'
+      : ageDays > maxAgeDays
+        ? `配置已过期 ${ageDays} 天（最长允许 ${maxAgeDays} 天）`
+        : '';
+  return { config, source, url, attempts, ageDays, usable, reason, maxAgeDays };
+}
+
 function fetchPolicyScoreConfig() {
-  const remoteUrls = [...new Set([POLICY_SCORE_URL, UPDATE_URL])];
+  // 自动更新脚本不是 JSON 配置，不能再作为消息面加分的兼容来源。
+  const remoteUrls = [...new Set([POLICY_SCORE_URL, POLICY_SCORE_FALLBACK_URL].filter(Boolean))];
+  const attempts = [];
 
   for (const url of remoteUrls) {
-    const remoteConfig = parsePolicyScoreConfig(fetchTextByCurl(url));
-    if (!remoteConfig) continue;
+    const response = fetchTextByCurl(url);
+    if (response.status !== 200) {
+      attempts.push({ url, status: response.status, error: response.error || '非 200 响应' });
+      continue;
+    }
+    const remoteConfig = parsePolicyScoreConfig(response.body);
+    if (!remoteConfig) {
+      attempts.push({ url, status: response.status, error: '内容不是包含 scores 数组的 JSON 配置' });
+      continue;
+    }
 
     writeJSONFile(LOCAL_POLICY_SCORE_FILE, remoteConfig);
-    return {
-      config: remoteConfig,
-      source: url === POLICY_SCORE_URL ? 'gist' : 'legacy-gist',
-      url,
-    };
+    return buildPolicyState(remoteConfig, url === POLICY_SCORE_URL ? 'gist' : 'legacy-gist', url, attempts);
   }
 
   const localConfig = readLocalPolicyScoreConfig();
   if (localConfig) {
-    return {
-      config: localConfig,
-      source: 'local-cache',
-      url: LOCAL_POLICY_SCORE_FILE,
-    };
+    return buildPolicyState(localConfig, 'local-cache', LOCAL_POLICY_SCORE_FILE, attempts);
   }
 
+  return buildPolicyState(null, 'default', null, attempts);
+}
+
+function readShortPolicyScoreConfig() {
+  const config = readJSONFile(SHORT_POLICY_SCORE_FILE);
+  return Array.isArray(config?.scores) ? config : null;
+}
+
+function getShortPolicyState() {
+  return buildPolicyState(
+    readShortPolicyScoreConfig(),
+    'short-local',
+    SHORT_POLICY_SCORE_FILE,
+    [],
+    DEEPSEEK_REVIEW_MAX_AGE_DAYS,
+  );
+}
+
+function getDailyPolicyState() {
+  return buildPolicyState(
+    readJSONFile(DAILY_POLICY_SCORE_FILE), 'daily-free-model', DAILY_POLICY_SCORE_FILE, [], 1,
+  );
+}
+
+function getPolicyConfigByHorizon(config, horizon) {
+  if (!config) return null;
+  const themes = (config.top_industries || []).filter(item => (item.horizon || 'short') === horizon);
+  if (!themes.length) return null;
+  return { ...config, version: `${config.version || '未标注版本'}-${horizon}`, top_industries: themes };
+}
+
+function mergePolicyConfigs(longConfig, shortConfig) {
+  if (!longConfig && !shortConfig) return null;
+  const scoreMaps = [longConfig, shortConfig].filter(Boolean).map(config =>
+    new Map((config.scores || []).map(item => [item.name, item]))
+  );
+  const scores = getDefaultCertaintyScores().map(template => {
+    const items = scoreMaps.map(map => map.get(template.name)).filter(Boolean);
+    const value = items.reduce((max, item) => Math.max(max, Number(item.value) || 0), 0);
+    const detail = items.map(item => item.detail).filter(Boolean).join('；').slice(0, 700);
+    return { name: template.name, max: template.max, value: Math.min(template.max, value), detail };
+  });
+  const seen = new Set();
+  const topIndustries = [];
+  for (const [config, horizon] of [[shortConfig, '短期'], [longConfig, '长期']]) {
+    for (const item of config?.top_industries || []) {
+      const name = String(item.name || '').trim();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      topIndustries.push({ ...item, horizon });
+    }
+  }
   return {
-    config: null,
-    source: 'default',
-    url: null,
+    version: `长期:${longConfig?.version || '无'} + 短期:${shortConfig?.version || '无'}`,
+    updated_at: shortConfig?.updated_at || longConfig?.updated_at || '',
+    analysis_summary: [longConfig?.analysis_summary, shortConfig?.analysis_summary].filter(Boolean).join('；'),
+    top_industries: topIndustries,
+    scores,
   };
 }
 
@@ -640,6 +1110,47 @@ function resolveSectorCode(industryName, nameToBK, industries) {
   return null;
 }
 
+/**
+ * 报告展示用：保留所属行业，并从东财概念归属中挑选当前板块强度较高的 3 项。
+ * 不把无关热门题材塞给个股；最多展示 4 项（1 个行业 + 3 个关联概念）。
+ */
+function buildDisplayIndustries(stock, stockDetail, conceptHeatMap) {
+  const industry = String(stockDetail?.industry || stock?.industry || '').trim();
+  const seen = new Set();
+  const result = [];
+  const add = (name) => {
+    const value = String(name || '').trim();
+    const key = normalizeIndustryName(value);
+    if (!value || !key || seen.has(key)) return;
+    seen.add(key);
+    result.push(value);
+  };
+
+  // 所属行业是最确定的相关信息，始终排在第一位。
+  add(industry);
+
+  const concepts = Array.isArray(stockDetail?.concepts) ? stockDetail.concepts : [];
+  const rankedConcepts = concepts
+    .map((name, index) => {
+      const value = String(name || '').trim();
+      const heat = conceptHeatMap.get(normalizeIndustryName(value));
+      // 板块涨幅为主，涨跌家数反映广度；接口未返回时保持原始关联顺序。
+      const breadth = heat && (heat.riseCount + heat.fallCount) > 0
+        ? heat.riseCount / (heat.riseCount + heat.fallCount)
+        : 0;
+      return { value, index, score: heat ? heat.changePercent * 100 + breadth : -10000 };
+    })
+    .filter(item => item.value)
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+
+  for (const item of rankedConcepts) {
+    if (result.length >= 4) break;
+    add(item.value);
+  }
+
+  return result;
+}
+
 async function buildStockDetailMap(candidates) {
   const detailMap = {};
 
@@ -739,17 +1250,114 @@ function formatDate(d) {
   return `${y}-${m}-${day}`;
 }
 
-function determineLevelAndSuggestion(finalScore) {
-  if (finalScore >= 75) {
-    return { level: 'A', suggestion: '强势共振，可出手，仓位3-4成' };
+/**
+ * 生成不覆盖历史结果的报告路径。
+ * 同一天多次运行时依次追加（2）、（3）……，保留每次选股快照。
+ */
+function getOutputFilePath(now = new Date()) {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  const baseName = `选股结果${y}年${m}月${d}日`;
+
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  let outputFile = path.join(OUTPUT_DIR, `${baseName}.html`);
+  let sequence = 2;
+  while (fs.existsSync(outputFile)) {
+    outputFile = path.join(OUTPUT_DIR, `${baseName}（${sequence}）.html`);
+    sequence += 1;
   }
-  if (finalScore >= 68) {
-    return { level: 'B', suggestion: '轻仓试错1-2成' };
+  return outputFile;
+}
+
+/**
+ * 在抓取详情前，将候选按可解释的活跃度排序，避免受上游 API 返回顺序影响。
+ * 不以连板数作为排序条件，首板/二板偏好留待后续策略单独定义。
+ */
+function rankCandidates(candidates) {
+  const numberOr = (value, fallback = 0) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  return [...candidates].sort((a, b) => {
+    // 同花顺热榜排名越靠前，优先级越高；无热榜数据的排在其后。
+    const hotRankA = numberOr(a.hotRank, Number.POSITIVE_INFINITY);
+    const hotRankB = numberOr(b.hotRank, Number.POSITIVE_INFINITY);
+    if (hotRankA !== hotRankB) return hotRankA - hotRankB;
+
+    // 热榜相同或都无热榜时，优先当日更强、交易更活跃的标的。
+    const changeDiff = numberOr(b.changePercent) - numberOr(a.changePercent);
+    if (changeDiff !== 0) return changeDiff;
+
+    const turnoverDiff = numberOr(b.turnoverRate) - numberOr(a.turnoverRate);
+    if (turnoverDiff !== 0) return turnoverDiff;
+
+    return String(a.code || '').localeCompare(String(b.code || ''));
+  });
+}
+
+function getLimitUpThreshold(code) {
+  // 选股形态按统一强势阈值识别，主板与创业板均以 9.7% 作为“涨停/封板”信号。
+  return 9.7;
+}
+
+function isLimitUpKline(kline, code) {
+  return Number(kline?.changePercent) >= getLimitUpThreshold(code);
+}
+
+/**
+ * 首板、二板与换手式 N 天 N-1/N-2 板共用一个榜单，但不奖励三连板以上的连续加速。
+ * 仅在当天封板时加分，避免把已经走弱的历史连板误判为可参与机会。
+ */
+function getShortTermBoardPattern(stock, klines) {
+  const code = stock?.code || '';
+  if (!Array.isArray(klines) || klines.length < 3) return null;
+
+  const today = klines[klines.length - 1];
+  if (!isLimitUpKline(today, code)) return null;
+
+  let consecutiveBoards = 0;
+  for (let i = klines.length - 1; i >= 0; i--) {
+    if (!isLimitUpKline(klines[i], code)) break;
+    consecutiveBoards += 1;
   }
-  if (finalScore >= 60) {
-    return { level: 'C', suggestion: '观察名单，暂不出手' };
+
+  if (consecutiveBoards >= 3) return null;
+  if (consecutiveBoards === 2) {
+    return { name: '二板确认', score: 2, detail: '连续2日涨停' };
   }
-  return { level: 'D', suggestion: '放弃' };
+
+  const previousFour = klines.slice(-5, -1);
+  if (!previousFour.some(k => isLimitUpKline(k, code))) {
+    return { name: '首板启动', score: 3, detail: '近4日无涨停，今日首次封板' };
+  }
+
+  // 识别最近 3~10 日的换手板。优先 N 天 N-1 板，其次 N 天 N-2 板。
+  for (let days = 3; days <= Math.min(10, klines.length); days++) {
+    const window = klines.slice(-days);
+    const boardCount = window.filter(k => isLimitUpKline(k, code)).length;
+    if (boardCount === days - 1) {
+      return { name: `${days}天${days - 1}板`, score: 1, detail: `近${days}日${boardCount}次涨停，非连续三板` };
+    }
+  }
+  for (let days = 4; days <= Math.min(10, klines.length); days++) {
+    const window = klines.slice(-days);
+    const boardCount = window.filter(k => isLimitUpKline(k, code)).length;
+    if (boardCount === days - 2) {
+      return { name: `${days}天${days - 2}板`, score: 0.5, detail: `近${days}日${boardCount}次涨停，非连续三板` };
+    }
+  }
+
+  return null;
+}
+
+function determineLevelAndRating(finalScore) {
+  if (finalScore >= 88) return { level: 'S', rating: '冲' };
+  if (finalScore >= 80) return { level: 'A', rating: '出手' };
+  if (finalScore >= 72) return { level: 'B', rating: '轻仓' };
+  if (finalScore >= 65) return { level: 'C', rating: '观望' };
+  return { level: 'D', rating: '放弃' };
 }
 
 // ── 板块判断 ──
@@ -882,9 +1490,11 @@ async function checkAnnouncementRisk(code) {
 async function getCandidates() {
   console.log('📡 获取涨停股池...');
   const state = await aStockData.getCandidates();
-  const candidates = (state.candidates || []).filter(s => isAllowed(s.code, s.name));
+  const candidates = rankCandidates(
+    (state.candidates || []).filter(s => isAllowed(s.code, s.name)),
+  );
   console.log(`  ✅ a-stock-data 原始候选：${(state.candidates || []).length} 只`);
-  console.log(`  ✅ 过滤后候选：${candidates.length} 只`);
+  console.log(`  ✅ 过滤后候选：${candidates.length} 只（已按热榜/涨幅/换手排序）`);
   return { candidates, yesterdayPool: state.yesterdayPool || [] };
 }
 
@@ -1114,12 +1724,13 @@ function calcBaseScore(stock, klines, quote, sectorInfo, conceptInfo, marketInfo
 
   // ── 四、成交量 (15 分) ──
 
-  const calcAvgVol = (days) => {
-    const vals = klines.slice(-days).map(k => k.volume).filter(v => v != null && v > 0);
+  // 今日成交量与前序均量比较；均量不含当天，避免放量信号被当天大成交量稀释。
+  const calcPriorAvgVol = (days) => {
+    const vals = klines.slice(-(days + 1), -1).map(k => k.volume).filter(v => v != null && v > 0);
     return vals.length > 0 ? vals.reduce((a,b) => a+b, 0) / vals.length : 0;
   };
-  const vol5 = calcAvgVol(5);
-  const vol10 = calcAvgVol(10);
+  const vol5 = calcPriorAvgVol(5);
+  const vol10 = calcPriorAvgVol(10);
 
   // 4.1 量比 MA5 (7 分): V_min=1.0, V_max=1.4
   let score_vol1 = 0;
@@ -1154,14 +1765,15 @@ function calcBaseScore(stock, klines, quote, sectorInfo, conceptInfo, marketInfo
 
   // ── 五、K 线形态 (12 分) ──
 
-  // 5.1 突破幅度 (5 分): V_min=0%, V_max=8% (v2.3.0: 从3%改为8%)
+  // 5.1 突破幅度 (5 分): 相对前10日（不含当天）最高价，V_min=0%, V_max=8%
   let score_kline1 = 0;
-  if (klines.length >= 15) { // v2.3.0: 改为10日周期
-    const recentHigh10 = Math.max(...klines.slice(-10).map(k => k.high).filter(v => v != null));
-    const breakPct = ((c - recentHigh10) / recentHigh10) * 100;
+  let priorHigh10 = null;
+  if (klines.length >= 11) {
+    priorHigh10 = Math.max(...klines.slice(-11, -1).map(k => k.high).filter(v => v != null));
+    const breakPct = priorHigh10 > 0 ? ((c - priorHigh10) / priorHigh10) * 100 : 0;
     score_kline1 = linear(breakPct, 0, 8, 5); // v2.3.0: 满分阈值从3%改为8%
   }
-  scores.kline1 = { score: score_kline1, max: 5, name: '突破幅度(10日)', detail: klines.length>=15 ? `${((c-Math.max(...klines.slice(-10).map(k=>k.high).filter(v=>v!=null)))/Math.max(...klines.slice(-10).map(k=>k.high).filter(v=>v!=null))*100).toFixed(2)}%` : 'N/A' }; // v2.3.0
+  scores.kline1 = { score: score_kline1, max: 5, name: '突破幅度(前10日)', detail: priorHigh10 ? `${((c-priorHigh10)/priorHigh10*100).toFixed(2)}%` : 'N/A' };
   details.push(`突破: ${score_kline1.toFixed(1)}/5`);
 
   // 5.2 涨幅 (4 分): 3%-7%线性到4分；7%-10%保持3分；一字涨停0分 (v2.3.0)
@@ -1233,7 +1845,7 @@ function calcBaseScore(stock, klines, quote, sectorInfo, conceptInfo, marketInfo
 
   // ── 八、大盘环境 (15 分) ──
   // A股大盘(5分): 保留原三项逻辑，原 15 分按比例压缩为 5 分
-  // 情绪周期(5分): 极度恐慌/适中=满分，极度贪婪=0分，贪婪段用线性+弧线过渡
+  // 情绪周期(5分): 极度恐慌/周期零点=满分，极度贪婪=0分，线性过渡
   // 外围环境(5分): 纳指/道指/标普风险偏好 + 黄金/原油避险与成本压力
   let score_mkt1 = 0, score_mkt2 = 0, score_mkt3 = 0;
   if (marketInfo) {
@@ -1363,6 +1975,13 @@ function calcBonus(klines, stock, todaySSE, sectorInfo, policyConfig, stockDetai
     bonusTotal += certaintyBonus;
   }
 
+  // ── 超短线接力形态（首板/二板/换手板）──
+  const boardPattern = getShortTermBoardPattern(stock, klines);
+  if (boardPattern) {
+    bonusItems.push(boardPattern);
+    bonusTotal += boardPattern.score;
+  }
+
   // v2.3.0: 加分项总上限15分
   bonusTotal = round1(Math.min(bonusTotal, 15));
   return { bonusTotal, bonusItems };
@@ -1384,11 +2003,12 @@ function calcDeductions(stock, klines, marketInfo, sectorInfo) {
   const todaySSE = marketInfo?.sseChangePercent ?? 0;
 
   // 计算均量
-  const calcAvgVol = (days) => {
-    const vals = klines.slice(-days).map(k => k.volume).filter(v => v != null && v > 0);
+  // 与基础分统一使用前序均量，保证放量扣分的基准一致。
+  const calcPriorAvgVol = (days) => {
+    const vals = klines.slice(-(days + 1), -1).map(k => k.volume).filter(v => v != null && v > 0);
     return vals.length > 0 ? vals.reduce((a,b) => a+b, 0) / vals.length : 0;
   };
-  const vol5 = calcAvgVol(5);
+  const vol5 = calcPriorAvgVol(5);
 
   let deductions = [];
   let totalDed = 0;
@@ -1471,6 +2091,70 @@ function calcDeductions(stock, klines, marketInfo, sectorInfo) {
   return { totalDed: Math.min(totalDed, 100), deductions };
 }
 
+async function refreshPolicyStates() {
+  console.log('📡 获取长期/短期加分配置...');
+  const longPolicyState = fetchPolicyScoreConfig();
+  let dailyPolicyState = getDailyPolicyState();
+  if (!dailyPolicyState.usable) {
+    const dailyNews = await getPolicyNews();
+    console.log(`  ♻️ 每日新闻初筛（${dailyNews.length} 条增量）...`);
+    const dailyRefresh = await refreshPolicyWithFreeModel(dailyNews);
+    if (dailyRefresh.ok) {
+      dailyPolicyState = buildPolicyState(dailyRefresh.config, 'free-daily-auto', DAILY_POLICY_SCORE_FILE, [], 1);
+      console.log(`  ✅ ${dailyRefresh.model || FREE_LLM_MODEL} 已完成每日初筛`);
+    } else console.log(`  ⚠️ 每日免费模型初筛失败：${dailyRefresh.reason}`);
+  }
+  let shortPolicyState = getShortPolicyState();
+  if (!shortPolicyState.usable) {
+    const reviewNews = getArchivedPolicyNewsSince(shortPolicyState.config?.updated_at);
+    console.log(`  ♻️ DeepSeek 3天复核（${reviewNews.length} 条归档新闻）...`);
+    const refreshState = await refreshPolicyWithDeepSeek(reviewNews);
+    if (refreshState.ok) {
+      shortPolicyState = buildPolicyState(
+        refreshState.config,
+        'deepseek-short-auto',
+        SHORT_POLICY_SCORE_FILE,
+        shortPolicyState.attempts,
+        DEEPSEEK_REVIEW_MAX_AGE_DAYS,
+      );
+        console.log(`  ✅ DeepSeek 已根据 ${refreshState.newsCount} 条最新新闻完成3天复核`);
+    } else {
+      console.log(`  ⚠️ DeepSeek 短期刷新失败：${refreshState.reason}`);
+    }
+  }
+  const policyConfig = mergePolicyConfigs(
+    mergePolicyConfigs(
+      longPolicyState.usable ? longPolicyState.config : null,
+      shortPolicyState.usable ? getPolicyConfigByHorizon(shortPolicyState.config, 'long') : null,
+    ),
+    mergePolicyConfigs(
+      shortPolicyState.usable ? getPolicyConfigByHorizon(shortPolicyState.config, 'short') : null,
+      dailyPolicyState.usable ? dailyPolicyState.config : null,
+    ),
+  );
+  const policyState = {
+    config: policyConfig,
+    usable: Boolean(policyConfig),
+    source: 'long-short-combined',
+    longPolicyState,
+    dailyPolicyState,
+    reviewPolicyState: shortPolicyState,
+    reason: policyConfig ? '' : `长期：${longPolicyState.reason}；短期：${shortPolicyState.reason}`,
+  };
+  if (longPolicyState.usable) {
+    console.log(`  ✅ 长期配置：${longPolicyState.config.version || '未标注版本'}（${longPolicyState.ageDays}天前更新）`);
+  } else {
+    console.log(`  ⚠️ 长期配置未启用：${longPolicyState.reason}`);
+  }
+  if (shortPolicyState.usable) {
+    console.log(`  ✅ 短期配置：${shortPolicyState.config.version || '未标注版本'}（${shortPolicyState.ageDays}天前更新，3天复核）`);
+  } else {
+    console.log(`  ⚠️ 短期配置未启用：${shortPolicyState.reason}`);
+  }
+  if (dailyPolicyState.usable) console.log(`  ✅ 每日初筛：${dailyPolicyState.config.version || FREE_LLM_MODEL}`);
+  return policyState;
+}
+
 // ── 主流程 ──
 
 async function main() {
@@ -1487,21 +2171,11 @@ async function main() {
 
   const startTime = Date.now();
 
-  console.log('📡 获取加分配置...');
-  const policyState = fetchPolicyScoreConfig();
+  const policyState = await refreshPolicyStates();
   const policyConfig = policyState.config;
-  if (policyConfig) {
-    const policyVersion = policyConfig.version || '未标注版本';
-    const policyDate = policyConfig.updated_at || '未标注日期';
-    if (policyState.source === 'gist') {
-      console.log(`  ✅ 已加载 Gist 加分配置: ${policyVersion} (${policyDate})`);
-    } else if (policyState.source === 'legacy-gist') {
-      console.log(`  ⚠️ Gist 当前仍是旧结构，已从兼容地址读取加分配置: ${policyVersion} (${policyDate})`);
-    } else {
-      console.log(`  ⚠️ Gist 加分配置获取失败，改用本地缓存: ${policyVersion} (${policyDate})`);
-    }
-  } else {
-    console.log('  ⚠️ 未找到可用加分配置，确定性加分按 0 分处理');
+  if (process.argv.includes('--policy-refresh-only') || process.env.XUANGU_POLICY_REFRESH_ONLY === '1') {
+    console.log('✅ 消息面缓存刷新完成（仅刷新模式），未执行选股。');
+    return;
   }
 
   // ── 从东方财富 API 获取实时数据（替代硬编码和缺失数据）──
@@ -1538,7 +2212,7 @@ async function main() {
     return;
   }
 
-  // 截取前 MAX_CANDIDATES 只
+  // 候选股已按优先级排序，默认逐只详细分析前60只，控制运行时间。
   const toAnalyze = candidates.slice(0, MAX_CANDIDATES);
 
   console.log('📡 获取个股详情...');
@@ -1549,6 +2223,12 @@ async function main() {
   console.log('📡 获取板块数据...');
   const sectorInfoMap = await buildSectorInfo(toAnalyze, stockDetailMap);
   console.log(`  ✅ 已获取 ${sectorInfoMap ? Object.keys(sectorInfoMap).length : 0} 只股票的板块信息`);
+
+  // 概念板块列表已在 buildSectorInfo 中加载并缓存；这里构建名称→热度映射供报告展示使用。
+  const conceptHeatMap = new Map((await getConceptList()).map(item => [
+    normalizeIndustryName(item.name),
+    item,
+  ]));
 
   console.log(`\n🔎 详细分析 ${toAnalyze.length} 只候选股...\n`);
 
@@ -1609,8 +2289,8 @@ async function main() {
     const finalScore = Math.round(Math.max(0, baseScore + bonusTotal - totalDed));
     const effectiveDed = Math.min(totalDed, baseScore + bonusTotal); // 扣至0为止
 
-    // 等级只看总分：A(>=75) / B(68-74) / C(60-67) / D(<60)
-    const { level, suggestion } = determineLevelAndSuggestion(finalScore);
+    // 等级只看总分：S(>=88) / A(80-87) / B(72-79) / C(65-71) / D(<65)
+    const { level, rating } = determineLevelAndRating(finalScore);
 
     console.log(`✅ 基础${baseScore}/100 +${bonusTotal} -${effectiveDed} = ${finalScore}分 [${level}]`);
 
@@ -1619,6 +2299,7 @@ async function main() {
       price: stock.price || quote?.price || (klines[klines.length-1]?.close) || 0,
       changePercent: stock.changePercent ?? (klines[klines.length-1]?.changePercent) ?? 0,
       industry: stock.industry || '',
+      displayIndustries: buildDisplayIndustries(stock, stockDetail, conceptHeatMap),
       continuousBoard: stock.continuousBoardCount || 0,
       turnoverRate: stock.turnoverRate,
       baseScore: Math.round(baseScore),
@@ -1626,16 +2307,16 @@ async function main() {
       deductionTotal: Math.round(effectiveDed),
       finalScore,
       level,
-      suggestion,
+      rating,
       details: details.join(' | '),
       bonusItems,
       deductions,
       scores,
       klineLatest: klines[klines.length - 1],
       vol5: (() => {
-        const vals = klines.slice(-5).map(k => k.volume).filter(v => v != null && v > 0);
+        const vals = klines.slice(-6, -1).map(k => k.volume).filter(v => v != null && v > 0);
         return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
-      })() // v2.3.0: 新增量比MA5原始数据，供HTML显示
+      })() // 前5日均量，供HTML显示
     });
 
     // 避免请求过快
@@ -1646,7 +2327,7 @@ async function main() {
   results.sort((a, b) => b.finalScore - a.finalScore);
 
   // 输出前十
-  const top10 = results.slice(0, 10);
+  const top10 = results.slice(0, RESULT_LIMIT);
 
   console.log(`\n${'='.repeat(60)}`);
   console.log(`  📋 选股结果（前${top10.length}名）`);
@@ -1658,7 +2339,7 @@ async function main() {
     console.log(`  #${i+1} 【${r.code}】${r.name}`);
     console.log(`     行业: ${r.industry}  连板: ${r.continuousBoard}  换手: ${r.turnoverRate?.toFixed(2)}%`);
     console.log(`     基础分: ${r.baseScore}/100  +${r.bonusTotal}  -${r.deductionTotal}  = ${r.finalScore}分 [${r.level}]`);
-    console.log(`     建议: ${r.suggestion}`);
+    console.log(`     评级: ${r.rating}`);
     if (r.bonusItems.length > 0) {
       console.log(`     加分: ${r.bonusItems.map(b => `${b.name}+${b.score}`).join(' ')}`);
     }
@@ -1669,32 +2350,56 @@ async function main() {
   }
 
   // 生成 HTML 报告
-  generateHTML(top10, results, startTime);
+  const outputFile = generateHTML(top10, results, startTime, policyState);
 
   console.log(`\n${'='.repeat(60)}`);
   console.log(`  ✅ 选股完成！耗时 ${((Date.now() - startTime)/1000).toFixed(1)}s`);
-  console.log(`  📄 报告已生成：${path.resolve(OUTPUT_FILE)}`);
+  console.log(`  📄 报告已生成：${path.resolve(outputFile)}`);
   console.log(`${'='.repeat(60)}\n`);
 }
 
 // ── HTML 报告生成 ──
 
-function generateHTML(top10, allResults, startTime) {
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[char]));
+}
+
+function generateHTML(top10, allResults, startTime, policyState) {
   const now = new Date();
   const dateStr = formatDate(now);
   const timeStr = now.toLocaleTimeString('zh-CN');
+  const formatPolicyUpdatedAt = config => {
+    const value = config?.refresh_meta?.refreshed_at || config?.updated_at;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return String(value).replace(/-/g, '年').replace(/年(\d{2})$/, '月$1日');
+    const date = value ? new Date(value) : null;
+    if (!date || Number.isNaN(date.getTime())) return '时间未知';
+    const pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}年${pad(date.getMonth() + 1)}月${pad(date.getDate())}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+  const policyLabel = (label, state) => state?.usable
+    ? `${label}：${state.config?.version || '未标注版本'}（更新于 ${formatPolicyUpdatedAt(state.config)}）`
+    : `${label}：未启用（${state?.reason || '无有效配置'}）`;
+  const policyMeta = policyState?.usable
+    ? `${policyLabel('长期', policyState.longPolicyState)}<br>${policyLabel('短期每日', policyState.dailyPolicyState)}<br>${policyLabel('DeepSeek 3天复核', policyState.reviewPolicyState)}`
+    : `确定性加分未启用：${policyState?.reason || '无有效配置'}`;
 
   const rows = top10.map((r, i) => {
     const bonusStr = r.bonusItems.map(b => `<span class="bonus">${b.name}+${b.score}</span>`).join(' ');
     const dedStr = r.deductions.map(d => `<span class="deduction">${d.name}${d.score}</span>`).join(' ');
-    const levelColor = r.level === 'A' ? '#00c853' : r.level === 'B' ? '#ffd600' : r.level === 'C' ? '#ff9100' : '#ff1744';
+    const levelColor = r.level === 'S' ? '#e040fb' : r.level === 'A' ? '#00c853' : r.level === 'B' ? '#ffd600' : r.level === 'C' ? '#ff9100' : '#ff1744';
+    const industries = r.displayIndustries?.length ? r.displayIndustries : (r.industry ? [r.industry] : []);
+    const industriesStr = industries.length
+      ? industries.map(item => `<span class="industry-tag">${escapeHtml(item)}</span>`).join('')
+      : '<span class="industry-tag">未分类</span>';
 
     return `
     <tr>
       <td>${i+1}</td>
       <td class="code">${r.code}</td>
       <td class="name">${r.name}</td>
-      <td>${r.industry}</td>
+      <td class="industry-tags">${industriesStr}</td>
       <td>${r.continuousBoard}</td>
       <td>${r.turnoverRate?.toFixed(1)}%</td>
       <td class="num">${r.changePercent?.toFixed(2)}%</td>
@@ -1704,7 +2409,7 @@ function generateHTML(top10, allResults, startTime) {
       <td class="num">-${r.deductionTotal}</td>
       <td class="num" style="color:${levelColor};font-weight:bold">${r.finalScore}</td>
       <td><span class="level level-${r.level}">${r.level}</span></td>
-      <td style="font-size:12px">${r.suggestion}</td>
+      <td style="font-size:12px">${r.rating}</td>
       <td style="font-size:11px;max-width:200px">${r.details} ${bonusStr} ${dedStr}</td>
     </tr>`;
   }).join('\n');
@@ -1731,8 +2436,11 @@ function generateHTML(top10, allResults, startTime) {
   tr:hover { background:#1c2128; }
   .code { font-family:monospace; color:#58a6ff; }
   .name { font-weight:bold; }
+  .industry-tags { min-width:180px; max-width:260px; }
+  .industry-tag { display:inline-block; margin:1px 3px 1px 0; padding:2px 5px; border-radius:4px; background:#1f3b5b; color:#79c0ff; font-size:11px; white-space:nowrap; }
   .num { text-align:center; font-family:monospace; }
   .level { display:inline-block; padding:2px 8px; border-radius:4px; font-weight:bold; font-size:12px; }
+  .level-S { background:#3d004d; color:#e040fb; }
   .level-A { background:#003d1a; color:#00c853; }
   .level-B { background:#3d2e00; color:#ffd600; }
   .level-C { background:#3d1c00; color:#ff9100; }
@@ -1745,20 +2453,21 @@ function generateHTML(top10, allResults, startTime) {
 <body>
 <div class="header">
   <h1>📊 超短线量化选股结果</h1>
-  <div class="meta">生成时间：${dateStr} ${timeStr} | 总资金：7万元 | 标的：沪/深主板 + 创业板</div>
+  <div class="meta">生成时间：${dateStr} ${timeStr} | 标的：沪/深主板 + 创业板<br>${policyMeta}</div>
 </div>
 <div class="summary">
   <div class="summary-item"><div class="num">${top10.length}</div><div class="label">输出个股</div></div>
   <div class="summary-item"><div class="num">${allResults.length}</div><div class="label">通过筛选</div></div>
+  <div class="summary-item"><div class="num">${allResults.filter(r => r.level === 'S').length}</div><div class="label">S级冲</div></div>
   <div class="summary-item"><div class="num">${allResults.filter(r => r.level === 'A').length}</div><div class="label">A级出手</div></div>
-  <div class="summary-item"><div class="num">${allResults.filter(r => r.level === 'B').length}</div><div class="label">B级试错</div></div>
-  <div class="summary-item"><div class="num">${allResults.filter(r => r.level === 'C').length}</div><div class="label">C级观察</div></div>
+  <div class="summary-item"><div class="num">${allResults.filter(r => r.level === 'B').length}</div><div class="label">B级轻仓</div></div>
+  <div class="summary-item"><div class="num">${allResults.filter(r => r.level === 'C').length}</div><div class="label">C级观望</div></div>
 </div>
 <table>
 <thead>
 <tr>
-  <th>#</th><th>代码</th><th>名称</th><th>行业</th><th>连板</th><th>换手</th><th>今日涨幅</th><th>量比MA5</th>
-  <th>基础</th><th>加分</th><th>扣分</th><th>总分</th><th>等级</th><th>建议</th><th>明细</th>
+  <th>#</th><th>代码</th><th>名称</th><th>行业/题材（最多4项）</th><th>连板</th><th>换手</th><th>今日涨幅</th><th>量比MA5</th>
+  <th>基础</th><th>加分</th><th>扣分</th><th>总分</th><th>等级</th><th>评级</th><th>明细</th>
 </tr>
 </thead>
 <tbody>
@@ -1767,12 +2476,14 @@ ${rows}
 </table>
 <div class="footer">
   ⚠️ 本结果仅供参考，不构成投资建议。股市有风险，投资需谨慎。<br>
-  💡 A级(≥75)可出手 | B级(68-74)轻仓试错 | C级(60-67)观察名单 | D级(<60)放弃
+  💡 评级规则：S级(≥88)冲 | A级(80-87)出手 | B级(72-79)轻仓 | C级(65-71)观望 | D级(<65)放弃
 </div>
 </body>
 </html>`;
 
-  fs.writeFileSync(OUTPUT_FILE, html, 'utf-8');
+  const outputFile = getOutputFilePath(now);
+  fs.writeFileSync(outputFile, html, 'utf-8');
+  return outputFile;
 }
 
 // ── 启动 ──
@@ -1785,5 +2496,5 @@ if (require.main === module) {
 }
 
 module.exports = {
-  determineLevelAndSuggestion,
+  determineLevelAndRating,
 };
