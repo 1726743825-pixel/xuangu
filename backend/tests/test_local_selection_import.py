@@ -578,6 +578,7 @@ def test_market_sync_reports_components_independently(monkeypatch):
 
 def test_daily_run_refreshes_recent_existing_dates_except_current(monkeypatch):
     monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
+    monkeypatch.setattr(local_import, "_selection_date_has_results", lambda _date: False)
     synced: list[str] = []
 
     def selection_run(*_args, **_kwargs):
@@ -603,6 +604,22 @@ def test_daily_run_refreshes_recent_existing_dates_except_current(monkeypatch):
     assert synced == ["2026-08-12", "2026-08-10", "2026-08-11"]
 
 
+def test_daily_run_skips_when_current_date_already_imported(monkeypatch, capsys):
+    monkeypatch.setattr(local_import, "_load_env_file", lambda _: None)
+    monkeypatch.setattr(local_import, "_selection_date_has_results", lambda date_value: date_value == "2026-08-12")
+    monkeypatch.setattr(
+        local_import, "_import_selection_run",
+        lambda *_args, **_kwargs: pytest.fail("existing selections must not be imported twice"),
+    )
+    monkeypatch.setattr(
+        local_import, "_sync_selected_market_data",
+        lambda *_args, **_kwargs: pytest.fail("existing selections must not trigger duplicate sync"),
+    )
+
+    assert local_import.main(["--trade-date", "2026-08-12", "--env-file", "unused.env"]) == 0
+    assert "已有选股结果，跳过" in capsys.readouterr().out
+
+
 def test_refresh_powershell_does_not_embed_token_or_modify_daily_task():
     project_root = Path(__file__).resolve().parents[2]
     refresh = (project_root / "scripts" / "refresh-existing-selection-market-data.ps1").read_text(encoding="utf-8")
@@ -621,3 +638,11 @@ def test_policy_refresh_task_runs_every_two_hours_after_close():
     assert "New-ScheduledTaskTrigger -Once" in installer
     assert "-RepetitionInterval" in installer
     assert "New-TimeSpan -Hours 2" in installer
+
+
+def test_policy_refresh_runs_selection_after_market_close_by_default():
+    project_root = Path(__file__).resolve().parents[2]
+    runner = (project_root / "scripts" / "run-local-policy-refresh.ps1").read_text(encoding="utf-8")
+    assert "scripts\\run-local-selection-import.ps1" in runner
+    assert "$marketClose = Get-Date -Hour 15 -Minute 0 -Second 0" in runner
+    assert "$SkipSelection" in runner

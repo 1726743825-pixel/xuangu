@@ -585,6 +585,17 @@ def _load_existing_selection_items(
     return items
 
 
+def _selection_date_has_results(
+    trade_date: str,
+    *,
+    loader: Callable[[str], list[dict]] = _load_existing_selection_items,
+) -> bool:
+    try:
+        return bool(loader(trade_date))
+    except SelectionImportError:
+        return False
+
+
 def _existing_selection_dates(
     end_date: str,
     *,
@@ -752,6 +763,9 @@ def main(argv: list[str] | None = None) -> int:
         requested_date = date.fromisoformat(args.trade_date)
         if requested_date.weekday() >= 5:
             print(f"非交易日，跳过本地选股与上传: {requested_date.isoformat()}")
+            return 0
+        if not args.replace_existing and _selection_date_has_results(requested_date.isoformat()):
+            print(f"{requested_date.isoformat()} 已有选股结果，跳过本地选股与上传")
             return 0
         selection_run = _import_selection_run(args.trade_date, replace_existing=args.replace_existing)
         quote_count, intraday_quote_count, index_count, stock_count = _sync_selected_market_data(

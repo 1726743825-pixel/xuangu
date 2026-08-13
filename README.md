@@ -173,7 +173,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 .\scripts\install-local-selection-task.ps1
 ```
 
-消息面刷新任务中，公司大模型只做快讯初筛并把结果备份到 `zixun_gongsidamoxing\policy_news_prefilter_daily.json`；DeepSeek V4 Flash 再读取初筛结果和原始归档，决定哪些快讯进入每日短期加分、哪些进入长期/周期观察，并回写主目录 `policy_scores_daily.json`。DeepSeek 3 天复核继续更新 `policy_scores_short.json`。16:10 选股任务如果发现 DeepSeek 当日定稿未完成，会暂缓选股并失败退出，避免用旧消息面选股。日志默认写入 `logs\policy-refresh-*.log`，不得输出任何 API key。
+消息面刷新任务中，公司大模型只做快讯初筛并把结果备份到 `zixun_gongsidamoxing\policy_news_prefilter_daily.json`；DeepSeek V4 Flash 再读取初筛结果和原始归档，决定哪些快讯进入每日短期加分、哪些进入长期/周期观察，并回写主目录 `policy_scores_daily.json`。DeepSeek 3 天复核继续更新 `policy_scores_short.json`。15:00 收盘后，如果消息面刷新任务确认 DeepSeek 当日定稿完成，会立即自动执行一次选股导入；16:10 固定选股任务如果发现当天已经有选股结果，会直接跳过，不重复执行。16:10 选股任务如果发现 DeepSeek 当日定稿未完成，会暂缓选股并失败退出，避免用旧消息面选股。日志默认写入 `logs\policy-refresh-*.log`，不得输出任何 API key。
 
 如需为已经入库的历史/周末官方报告补齐行情，使用独立受控命令；它只读取该日期现有选股，不运行 D 盘 Node、不重新选股、不替换或删除任何结果：
 
