@@ -52,6 +52,7 @@ const DAILY_POLICY_SCORE_FILE = 'D:/Program Files/xuangu/policy_scores_daily.jso
 const POLICY_NEWS_CURSOR_FILE = path.join(POLICY_NEWS_DIR, 'policy_news_cursor.json');
 const POLICY_NEWS_ARCHIVE_FILE = path.join(POLICY_NEWS_DIR, 'policy_news_archive.json');
 const DAILY_POLICY_PREFILTER_FILE = path.join(POLICY_NEWS_DIR, 'policy_news_prefilter_daily.json');
+const STOCK_TAG_CACHE_FILE = 'D:/Program Files/xuangu/stock_tag_enrichment_cache.json';
 const POLICY_FETCH_TIMEOUT = 15000;
 const LONG_POLICY_MAX_AGE_DAYS = 90;      // 长期政策/产业趋势按季度复核，不被短期快讯覆盖
 const SHORT_POLICY_MAX_AGE_DAYS = 3;      // DeepSeek 每3天复核短期催化与公司模型分组
@@ -67,6 +68,9 @@ const POLICY_EASTMONEY_NEWS_LIMIT = 80;
 const POLICY_THS_BOOTSTRAP_PAGES = 8;     // 首次建档：每频道约200条
 const POLICY_THS_INCREMENTAL_MAX_PAGES = 30; // 有游标后一直翻到游标，防止漏读
 const POLICY_AGENT_TIMEOUT = 120000;
+const STOCK_TAG_ENRICH_LIMIT = Math.max(0, Number.parseInt(process.env.STOCK_TAG_ENRICH_LIMIT || '20', 10) || 20);
+const STOCK_TAG_CACHE_MAX_AGE_DAYS = Math.max(1, Number.parseInt(process.env.STOCK_TAG_CACHE_MAX_AGE_DAYS || '14', 10) || 14);
+const STOCK_TAG_AGENT_TIMEOUT = 90000;
 
 // ── 工具函数 ──
 
@@ -482,6 +486,169 @@ function parseAiJsonContent(content) {
     try { return JSON.parse(candidate); } catch {}
   }
   return null;
+}
+
+function normalizeTagList(tags, limit = 8) {
+  const seen = new Set();
+  const result = [];
+  for (const tag of Array.isArray(tags) ? tags : []) {
+    const value = String(tag || '').trim().replace(/[，,、；;]/g, '|');
+    for (const part of value.split('|')) {
+      const clean = part.trim();
+      const key = normalizeThemeText(clean);
+      if (!clean || !key || seen.has(key) || clean.length > 30) continue;
+      seen.add(key);
+      result.push(clean);
+      if (result.length >= limit) return result;
+    }
+  }
+  return result;
+}
+
+function isWeakStockTags(stock, detail) {
+  const industry = String(detail?.industry || stock?.industry || '').trim();
+  const concepts = normalizeTagList(detail?.concepts || [], 6);
+  if (!industry || ['未分类', '其它', '其他', '综合'].includes(industry)) return true;
+  return concepts.length < 2;
+}
+
+function cachedStockTags(cache, code) {
+  const row = cache?.items?.[code];
+  if (!row || !Array.isArray(row.tags) || !row.tags.length) return null;
+  const updated = Date.parse(row.updated_at || '');
+  if (!Number.isFinite(updated)) return null;
+  const ageDays = (Date.now() - updated) / 86400000;
+  return ageDays <= STOCK_TAG_CACHE_MAX_AGE_DAYS ? row : null;
+}
+
+async function fetchStockNewsForTagging(code, name) {
+  const queries = [
+    `https://search-api-web.eastmoney.com/search/jsonp?cb=callback&param=${encodeURIComponent(JSON.stringify({
+      uid: '', keyword: `${code} ${name}`, type: ['cmsArticleWebOld'], client: 'web', clientType: 'web', pageIndex: 1, pageSize: 5,
+    }))}`,
+  ];
+  const rows = [];
+  for (const url of queries) {
+    const text = await new Promise(resolve => {
+      const req = https.get(url, {
+        timeout: 10000,
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://so.eastmoney.com/' },
+      }, res => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => resolve(data));
+      });
+      req.on('error', () => resolve(''));
+      req.on('timeout', () => { req.destroy(); resolve(''); });
+    });
+    const jsonText = String(text || '').replace(/^callback\(/, '').replace(/\);?$/, '');
+    try {
+      const parsed = JSON.parse(jsonText);
+      const list = parsed?.result?.cmsArticleWebOld || [];
+      for (const item of Array.isArray(list) ? list : []) {
+        rows.push({
+          title: item.title || item.Title || '',
+          summary: item.content || item.summary || item.digest || '',
+          time: item.showTime || item.date || '',
+        });
+      }
+    } catch {}
+  }
+  return rows.slice(0, 5);
+}
+
+async function qwenEnrichStockTags(stocks) {
+  if (!FREE_LLM_API_KEY || !stocks.length) return {};
+  const payloadStocks = stocks.map(item => ({
+    code: item.stock.code,
+    name: item.stock.name,
+    industry: item.detail?.industry || item.stock.industry || '',
+    concepts: normalizeTagList(item.detail?.concepts || [], 6),
+    news: item.news.map(row => `${row.time || ''} ${row.title || ''}${row.summary ? `：${String(row.summary).slice(0, 80)}` : ''}`),
+  }));
+  const system = '你是A股上市公司业务标签校对员。只根据输入的公司名称、已有行业/概念、相关新闻标题摘要补充业务/题材标签；不得给股票打分，不得编造未出现的业务。输出严格JSON，不要Markdown。';
+  const user = `请为以下候选股补充可能遗漏的业务/题材标签。JSON格式：{"items":[{"code":"000001","tags":["标签1"],"evidence":"20字内证据"}]}。每只最多5个tags，优先补充新业务、新进入行业、转型方向、订单/产品相关题材；没有证据则tags为空。\n${JSON.stringify(payloadStocks, null, 2)}`;
+  const payload = JSON.stringify({
+    model: FREE_LLM_MODEL,
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    response_format: { type: 'json_object' },
+    temperature: 0,
+    max_tokens: 5000,
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STOCK_TAG_AGENT_TIMEOUT);
+  let data = null;
+  try {
+    const response = await fetch(FREE_LLM_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${FREE_LLM_API_KEY}`,
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      body: payload,
+      signal: controller.signal,
+    });
+    if (response.status !== 200) return {};
+    data = await response.json().catch(() => null);
+  } catch {
+    return {};
+  } finally {
+    clearTimeout(timer);
+  }
+  const parsed = parseAiJsonContent(data?.choices?.[0]?.message?.content);
+  const result = {};
+  for (const row of Array.isArray(parsed?.items) ? parsed.items : []) {
+    const code = String(row.code || '').replace(/\D/g, '').padStart(6, '0');
+    const tags = normalizeTagList(row.tags || [], 5);
+    if (code && tags.length) result[code] = { tags, evidence: String(row.evidence || '').slice(0, 120) };
+  }
+  return result;
+}
+
+async function enrichCandidateTagsWithQwen(candidates, stockDetailMap) {
+  const cache = readJSONFile(STOCK_TAG_CACHE_FILE) || { version: 1, items: {} };
+  cache.items = cache.items || {};
+  const updatedCodes = [];
+  const toEnrich = [];
+
+  for (const stock of candidates) {
+    const detail = stockDetailMap[stock.code] || {};
+    const cached = cachedStockTags(cache, stock.code);
+    if (cached) {
+      detail.concepts = normalizeTagList([...(detail.concepts || []), ...cached.tags], 12);
+      detail.tag_enrichment = { source: 'qwen3-cache', evidence: cached.evidence || '' };
+      stockDetailMap[stock.code] = detail;
+      continue;
+    }
+    if (toEnrich.length < STOCK_TAG_ENRICH_LIMIT && isWeakStockTags(stock, detail)) {
+      const news = await fetchStockNewsForTagging(stock.code, stock.name);
+      toEnrich.push({ stock, detail, news });
+      await sleep(250);
+    }
+  }
+
+  if (!toEnrich.length) return { checked: 0, updated: 0 };
+  const enriched = await qwenEnrichStockTags(toEnrich);
+  for (const item of toEnrich) {
+    const row = enriched[item.stock.code];
+    if (!row?.tags?.length) continue;
+    const detail = stockDetailMap[item.stock.code] || item.detail || {};
+    detail.concepts = normalizeTagList([...(detail.concepts || []), ...row.tags], 12);
+    detail.tag_enrichment = { source: 'qwen3', evidence: row.evidence || '' };
+    stockDetailMap[item.stock.code] = detail;
+    cache.items[item.stock.code] = {
+      code: item.stock.code,
+      name: item.stock.name,
+      tags: row.tags,
+      evidence: row.evidence || '',
+      updated_at: new Date().toISOString(),
+    };
+    updatedCodes.push(item.stock.code);
+  }
+  cache.updated_at = new Date().toISOString();
+  writeJSONFileAtomic(STOCK_TAG_CACHE_FILE, cache);
+  return { checked: toEnrich.length, updated: updatedCodes.length };
 }
 
 async function refreshPolicyWithFreeModel(news) {
@@ -2361,6 +2528,10 @@ async function main() {
   console.log('📡 获取个股详情...');
   const stockDetailMap = await buildStockDetailMap(toAnalyze);
   console.log(`  ✅ 已获取 ${Object.keys(stockDetailMap).length} 只股票的详情信息`);
+
+  console.log('🤖 Qwen3 兜底校对候选股行业/题材标签...');
+  const tagEnrichment = await enrichCandidateTagsWithQwen(toAnalyze, stockDetailMap);
+  console.log(`  ✅ Qwen3 标签兜底：检查 ${tagEnrichment.checked} 只，更新 ${tagEnrichment.updated} 只`);
 
   // 2. 获取板块热点数据（批量一次性获取）
   console.log('📡 获取板块数据...');

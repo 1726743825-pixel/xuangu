@@ -159,6 +159,8 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 追涨和超跌每套策略最多导入排名前 10 只。追涨报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果。超跌报告为 130 分制，导入时会将 `score` 归一化到 0–100，并在 `indicators.raw_score/raw_score_max` 保留原始分。报告自带价格时优先保留；否则用报告日期之前最近一个真实 AKShare 日K收盘作为 `selection_price`，同时保存该 bar 的 `selection_price_date`。当前价也来自最近真实日K，时间固定为该 bar 日期的收盘时刻；周末报告不会被标记成周末实时行情。行情同步只服务展示和收益计算，不参与候选股计算。
 
+追涨脚本在 60 只候选股进入详细评分前，会先使用公开接口获取行业/概念标签；若标签缺失、过少或过粗，会调用公司大模型 Qwen3-Instruct 对候选股进行业务/题材标签兜底。Qwen3 只根据公司名称、已有行业/概念和个股相关新闻补充标签，不直接给个股打分；补出的标签写入 `D:\Program Files\xuangu\stock_tag_enrichment_cache.json` 缓存 14 天，并参与后续与 DeepSeek 消息面方向加分池的匹配。
+
 消息面/政策加分缓存由本机追涨脚本维护。最终加分文件保存在主目录：`D:\Program Files\xuangu\policy_scores.json`（长期）、`policy_scores_daily.json`（每日短期）、`policy_scores_short.json`（短期/周期复核）；公司大模型每 2 小时跑出来的资讯材料保存在 `D:\Program Files\xuangu\zixun_gongsidamoxing\`，包括 `policy_news_cursor.json`、`policy_news_archive.json` 和 `policy_news_prefilter_daily.json`，仅作为 DeepSeek/人工校核材料。收盘后应先刷新消息面，再运行选股；也可以用独立入口刷新，不运行选股、不上传结果：
 
 ```powershell
