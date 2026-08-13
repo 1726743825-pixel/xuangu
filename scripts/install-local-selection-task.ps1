@@ -13,9 +13,12 @@ if (-not $PythonPath) {
 if (-not (Test-Path -LiteralPath $Runner)) { throw "Runner not found: $Runner" }
 if (-not (Test-Path -LiteralPath $PythonPath)) { throw "Python executable not found: $PythonPath" }
 
+$PowerShellPath = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
+if (-not $PowerShellPath) { $PowerShellPath = 'powershell.exe' }
+
 # Runs only while the domestic-network Windows user is logged on; no password
 # or token is embedded in the task definition.
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Runner`" -PythonPath `"$PythonPath`""
+$action = New-ScheduledTaskAction -Execute $PowerShellPath -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Runner`" -PythonPath `"$PythonPath`"" -WorkingDirectory $ProjectRoot
 $trigger = New-ScheduledTaskTrigger -Daily -At 4:10PM
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)

@@ -53,6 +53,7 @@ const DAILY_POLICY_SCORE_FILE = 'D:/Program Files/xuangu/policy_scores_daily.jso
 const POLICY_NEWS_CURSOR_FILE = path.join(POLICY_NEWS_DIR, 'policy_news_cursor.json');
 const POLICY_NEWS_ARCHIVE_FILE = path.join(POLICY_NEWS_DIR, 'policy_news_archive.json');
 const DAILY_POLICY_PREFILTER_FILE = path.join(POLICY_NEWS_DIR, 'policy_news_prefilter_daily.json');
+const DEEPSEEK_POLICY_DEBUG_FILE = path.join(POLICY_NEWS_DIR, 'deepseek_policy_debug.json');
 const STOCK_TAG_CACHE_FILE = 'D:/Program Files/xuangu/stock_tag_enrichment_cache.json';
 const POLICY_FETCH_TIMEOUT = 15000;
 const LONG_POLICY_MAX_AGE_DAYS = 90;      // 长期政策/产业趋势按季度复核，不被短期快讯覆盖
@@ -69,6 +70,8 @@ const POLICY_EASTMONEY_NEWS_LIMIT = 80;
 const POLICY_THS_BOOTSTRAP_PAGES = 8;     // 首次建档：每频道约200条
 const POLICY_THS_INCREMENTAL_MAX_PAGES = 30; // 有游标后一直翻到游标，防止漏读
 const POLICY_AGENT_TIMEOUT = 120000;
+const DAILY_POLICY_DEEPSEEK_NEWS_LIMIT = 60;
+const SHORT_POLICY_DEEPSEEK_NEWS_LIMIT = 120;
 const STOCK_TAG_ENRICH_LIMIT = Math.max(0, Number.parseInt(process.env.STOCK_TAG_ENRICH_LIMIT || '20', 10) || 20);
 const STOCK_TAG_CACHE_MAX_AGE_DAYS = Math.max(1, Number.parseInt(process.env.STOCK_TAG_CACHE_MAX_AGE_DAYS || '14', 10) || 14);
 const STOCK_TAG_AGENT_TIMEOUT = 90000;
@@ -470,7 +473,7 @@ function buildPolicyPrompt(news, role) {
   const newsText = news.map((item, index) =>
     `${index + 1}. [${item.source} ${item.time}] ${item.title}${item.summary ? `：${item.summary}` : ''}`,
   ).join('\n');
-  const system = `你是 A 股超短线的${role}。仅依据提供新闻输出 JSON，不得编造政策、资金、订单或业绩事实。每个 top_industries 项必须给出 horizon（long 或 short）：国家战略、地方投资规划、持续产业供需或盈利改善才可标 long；事件驱动、快讯、情绪催化标 short；纯噪声、重复报道、无法映射 A 股产业的消息必须剔除。旧 short 证据不足时必须删除或下调，不能长期加分；long 主题只有反向证据出现时才下调。JSON 必含 period、analysis_summary、top_industries、scores。top_industries 为3到8项，每项含 name、score(0-100)、level(S/A/B/C)、horizon、evidence。scores 必须包含现有12项，每项含 name、value、detail。若 top_industries 中存在3个以上score>=60的有效方向，scores 的12项不能全部为0，应按新闻证据给政策、资金、业绩、订单、研发、产业落地等维度分配0到max之间的谨慎分值；只有完全没有可验证利好证据时才允许全部为0。仅输出 JSON。`;
+  const system = `你是 A 股超短线的${role}。仅依据新闻输出严格 JSON，不得编造事实，不要 Markdown。字段只允许 period、analysis_summary、top_industries、scores。top_industries 输出3到6项，每项含 name、score(0-100)、level(S/A/B/C)、horizon(long|short)、evidence(60字内)。scores 必须包含现有12项，每项含 name、value、detail(40字内)。有明确利好时12项不能全部为0。`;
   return { system, user: `请根据以下${news.length}条新闻生成确定性加分 JSON：\n${newsText}` };
 }
 
@@ -487,6 +490,18 @@ function parseAiJsonContent(content) {
     try { return JSON.parse(candidate); } catch {}
   }
   return null;
+}
+
+function writePolicyModelDebug(stage, content, extra = {}) {
+  const text = String(content || '');
+  writeJSONFileAtomic(DEEPSEEK_POLICY_DEBUG_FILE, {
+    stage,
+    written_at: new Date().toISOString(),
+    model: DEEPSEEK_MODEL,
+    content_length: text.length,
+    content_preview: text.slice(0, 12000),
+    ...extra,
+  });
 }
 
 function normalizeTagList(tags, limit = 8) {
@@ -759,10 +774,10 @@ async function refreshDailyPolicyWithDeepSeek(prefilterConfig, news) {
     top_industries: prefilterConfig.top_industries,
     scores: prefilterConfig.scores,
   }, null, 2);
-  const newsText = news.slice(0, 80).map((item, index) =>
+  const newsText = news.slice(0, DAILY_POLICY_DEEPSEEK_NEWS_LIMIT).map((item, index) =>
     `${index + 1}. [${item.source} ${item.time}] ${item.title}${item.summary ? `：${item.summary}` : ''}`,
   ).join('\n');
-  const system = '你是A股消息面最终复核器。公司大模型只负责粗筛快讯，你负责决定哪些进入每日短期加分、哪些应进入长期/周期加分观察。仅依据输入材料输出严格JSON，不得编造事实，不要Markdown。每日短期加分应偏交易性和1-3日催化；长期逻辑应标long但仍写入top_industries供后续3天复核。scores必须给出12项谨慎分值；若存在明确政策、订单、业绩、产业落地证据，不能全部为0。JSON字段只允许period、analysis_summary、top_industries、scores。top_industries最多8项，evidence每项不超过160字。';
+  const system = '你是A股消息面最终复核器。公司大模型只负责粗筛，你负责定稿。仅输出严格JSON，不得编造事实，不要Markdown。字段只允许period、analysis_summary、top_industries、scores。top_industries输出3到6项，每项含name、score(0-100)、level(S/A/B/C)、horizon(long|short)、evidence(60字内)。scores必须给出12项谨慎分值，每项含name、value、detail(40字内)；有明确利好时不能全部为0。';
   const payload = JSON.stringify({
     model: DEEPSEEK_MODEL,
     messages: [
@@ -771,7 +786,7 @@ async function refreshDailyPolicyWithDeepSeek(prefilterConfig, news) {
     ],
     response_format: { type: 'json_object' },
     temperature: 0.1,
-    max_tokens: 5000,
+    max_tokens: 8000,
   });
   const response = await requestJson(DEEPSEEK_API_URL, {
     method: 'POST',
@@ -784,10 +799,21 @@ async function refreshDailyPolicyWithDeepSeek(prefilterConfig, news) {
     timeout: POLICY_AGENT_TIMEOUT,
   });
   if (response.status !== 200) return { ok: false, reason: `DeepSeek 日度复核 HTTP ${response.status || '请求失败'}` };
-  const raw = parseAiJsonContent(response.data?.choices?.[0]?.message?.content);
-  if (!raw) return { ok: false, reason: 'DeepSeek 日度复核未返回可解析 JSON' };
+  const content = response.data?.choices?.[0]?.message?.content;
+  const raw = parseAiJsonContent(content);
+  if (!raw) {
+    writePolicyModelDebug('daily-final-parse-failed', content, {
+      finish_reason: response.data?.choices?.[0]?.finish_reason || '',
+    });
+    return { ok: false, reason: 'DeepSeek 日度复核未返回可解析 JSON' };
+  }
   const config = normalizeAiPolicyConfig(raw, news.length);
-  if (!config) return { ok: false, reason: 'DeepSeek 日度复核配置校验失败' };
+  if (!config) {
+    writePolicyModelDebug('daily-final-normalize-failed', JSON.stringify(raw, null, 2), {
+      raw_keys: raw && typeof raw === 'object' ? Object.keys(raw) : [],
+    });
+    return { ok: false, reason: 'DeepSeek 日度复核配置校验失败' };
+  }
   config.version = `${formatDate(new Date())}-${DEEPSEEK_MODEL}-daily-final-v1`;
   config.refresh_meta = {
     source: 'deepseek-v4-flash-daily-final',
@@ -803,7 +829,7 @@ async function refreshDailyPolicyWithDeepSeek(prefilterConfig, news) {
 
 async function refreshPolicyWithDeepSeek(newsInput = null) {
   if (!DEEPSEEK_API_KEY) return { ok: false, reason: '未配置 DEEPSEEK_API_KEY' };
-  const news = newsInput || await getPolicyNews();
+  const news = (newsInput || await getPolicyNews()).slice(0, SHORT_POLICY_DEEPSEEK_NEWS_LIMIT);
   if (news.length < 8) return { ok: false, reason: `当前新闻源不足（仅 ${news.length} 条）` };
 
   const prompt = buildPolicyPrompt(news, '政策与产业消息面复核器');
@@ -815,7 +841,7 @@ async function refreshPolicyWithDeepSeek(newsInput = null) {
     ],
     response_format: { type: 'json_object' },
     temperature: 0.2,
-    max_tokens: 5000,
+    max_tokens: 8000,
   });
   const response = await requestJson(DEEPSEEK_API_URL, {
     method: 'POST',
@@ -831,9 +857,19 @@ async function refreshPolicyWithDeepSeek(newsInput = null) {
 
   const content = response.data?.choices?.[0]?.message?.content;
   const aiConfig = parseAiJsonContent(content);
-  if (!aiConfig) return { ok: false, reason: 'DeepSeek 未返回可解析的 JSON 配置' };
+  if (!aiConfig) {
+    writePolicyModelDebug('short-review-parse-failed', content, {
+      finish_reason: response.data?.choices?.[0]?.finish_reason || '',
+    });
+    return { ok: false, reason: 'DeepSeek 未返回可解析的 JSON 配置' };
+  }
   const config = normalizeAiPolicyConfig(aiConfig, news.length);
-  if (!config) return { ok: false, reason: 'DeepSeek 配置校验失败（重点行业少于3项或字段缺失）' };
+  if (!config) {
+    writePolicyModelDebug('short-review-normalize-failed', JSON.stringify(aiConfig, null, 2), {
+      raw_keys: aiConfig && typeof aiConfig === 'object' ? Object.keys(aiConfig) : [],
+    });
+    return { ok: false, reason: 'DeepSeek 配置校验失败（重点行业少于3项或字段缺失）' };
+  }
   if (!writeJSONFileAtomic(SHORT_POLICY_SCORE_FILE, config)) return { ok: false, reason: '写入短期确定性配置失败' };
   return { ok: true, config, newsCount: news.length };
 }

@@ -628,6 +628,9 @@ def test_refresh_powershell_does_not_embed_token_or_modify_daily_task():
     assert "--refresh-existing-date" in refresh
     assert "refresh-existing-selection-market-data" not in installer
     assert "4:10PM" in installer
+    assert "Get-Command pwsh.exe" in installer
+    assert "-WindowStyle Hidden" in installer
+    assert "-WorkingDirectory $ProjectRoot" in installer
 
 
 def test_policy_refresh_task_runs_every_two_hours_after_close():
@@ -638,6 +641,9 @@ def test_policy_refresh_task_runs_every_two_hours_after_close():
     assert "New-ScheduledTaskTrigger -Once" in installer
     assert "-RepetitionInterval" in installer
     assert "New-TimeSpan -Hours 2" in installer
+    assert "Get-Command pwsh.exe" in installer
+    assert "-WindowStyle Hidden" in installer
+    assert "-WorkingDirectory $ProjectRoot" in installer
 
 
 def test_policy_refresh_runs_selection_after_market_close_by_default():
@@ -655,6 +661,9 @@ def test_qwen_model_work_has_deepseek_fallbacks():
     assert "enrichStockTagsWithModelFallback" in screener
     assert "DEEPSEEK_API_KEY" in screener
     assert "qwenCoverage" in screener
+    assert "DAILY_POLICY_DEEPSEEK_NEWS_LIMIT" in screener
+    assert "SHORT_POLICY_DEEPSEEK_NEWS_LIMIT" in screener
+    assert "writePolicyModelDebug" in screener
     assert "deepseekOnly" in review
     assert "--deepseek-only" in review
     assert "validCoverage" in review

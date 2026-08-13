@@ -179,6 +179,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 消息面刷新任务中，公司大模型只做快讯初筛并把结果备份到 `zixun_gongsidamoxing\policy_news_prefilter_daily.json`；DeepSeek V4 Flash 再读取初筛结果和原始归档，决定哪些快讯进入每日短期加分、哪些进入长期/周期观察，并回写主目录 `policy_scores_daily.json`。DeepSeek 3 天复核继续更新 `policy_scores_short.json`。15:00 收盘后，如果消息面刷新任务确认 DeepSeek 当日定稿完成，会立即自动执行一次选股导入；16:10 固定选股任务如果发现当天已经有选股结果，会直接跳过，不重复执行。16:10 选股任务如果发现 DeepSeek 当日定稿未完成，会暂缓选股并失败退出，避免用旧消息面选股。日志默认写入 `logs\policy-refresh-*.log`，不得输出任何 API key。
 
+Windows 计划任务安装脚本会优先使用 PowerShell 7 (`pwsh.exe`)，找不到时才回退到 Windows PowerShell；任务参数包含 `-WindowStyle Hidden`，避免整点刷新时弹出窗口。刷新脚本强制 UTF-8 写日志，并只写入日志文件，不再把 Node 输出回显到控制台。若 DeepSeek 返回内容被截断或不是合法 JSON，会把不含密钥的返回正文摘要写到 `D:\Program Files\xuangu\zixun_gongsidamoxing\deepseek_policy_debug.json` 用于排查。
+
+Qwen3 没有被限制为“只能处理 10 条快讯”。消息面快讯刷新仍按最新/补充资讯批量进入公司模型初筛；`TAG_REVIEW_BATCH_SIZE=10` 只用于“行业/题材标签规则复核”的安全分批，目的是避免长 JSON 输出被截断。关键结论仍以 DeepSeek 定稿或兜底为准。
+
 如需为已经入库的历史/周末官方报告补齐行情，使用独立受控命令；它只读取该日期现有选股，不运行 D 盘 Node、不重新选股、不替换或删除任何结果：
 
 ```powershell
