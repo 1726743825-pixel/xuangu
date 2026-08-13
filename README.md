@@ -161,6 +161,8 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 追涨脚本在 60 只候选股进入详细评分前，会先使用公开接口获取行业/概念标签；若标签缺失、过少或过粗，会调用公司大模型 Qwen3-Instruct 对候选股进行业务/题材标签兜底。Qwen3 只根据公司名称、已有行业/概念和个股相关新闻补充标签，不直接给个股打分；补出的标签写入 `D:\Program Files\xuangu\stock_tag_enrichment_cache.json` 缓存 14 天，并参与后续与 DeepSeek 消息面方向加分池的匹配。
 
+行业/题材标签统一规则保存在 `D:\Program Files\xuangu\Temp\Industry Classification_Tag\`。其中 `tag_rules.json` 维护“不同数据源标签 → 统一标准标签”的映射，`tag_normalizer.js` 提供转换接口，`unknown_tags_queue.json` 记录尚未命中规则的新标签。所有公开接口标签、Qwen3 兜底标签和 DeepSeek 当日新增方向都会先经过该转换层；DeepSeek 当日定稿里的新方向可临时作为可信标签参与匹配，其他未知标签进入待复核队列。仓库备份位于 `backend/existing/source/industry_tag/`。
+
 消息面/政策加分缓存由本机追涨脚本维护。最终加分文件保存在主目录：`D:\Program Files\xuangu\policy_scores.json`（长期）、`policy_scores_daily.json`（每日短期）、`policy_scores_short.json`（短期/周期复核）；公司大模型每 2 小时跑出来的资讯材料保存在 `D:\Program Files\xuangu\zixun_gongsidamoxing\`，包括 `policy_news_cursor.json`、`policy_news_archive.json` 和 `policy_news_prefilter_daily.json`，仅作为 DeepSeek/人工校核材料。收盘后应先刷新消息面，再运行选股；也可以用独立入口刷新，不运行选股、不上传结果：
 
 ```powershell

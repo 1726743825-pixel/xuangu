@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');      // 用于访问东方财富公开 API
 const aStockData = require('./a_stock_data_source');
+const tagNormalizer = require('../Temp/Industry Classification_Tag/tag_normalizer');
 
 // ── 配置 ──
 const TOTAL_FUNDS = 70000;               // 总资金 7 万元
@@ -505,6 +506,20 @@ function normalizeTagList(tags, limit = 8) {
   return result;
 }
 
+function policyTrustedTags(policyConfig) {
+  return (Array.isArray(policyConfig?.top_industries) ? policyConfig.top_industries : [])
+    .map(item => item?.name)
+    .filter(Boolean);
+}
+
+function normalizeBusinessTags(tags, policyConfig, context = {}, limit = 12) {
+  return tagNormalizer.normalizeTags(tags, {
+    trustedNewTags: policyTrustedTags(policyConfig),
+    context,
+    limit,
+  });
+}
+
 function isWeakStockTags(stock, detail) {
   const industry = String(detail?.industry || stock?.industry || '').trim();
   const concepts = normalizeTagList(detail?.concepts || [], 6);
@@ -606,7 +621,7 @@ async function qwenEnrichStockTags(stocks) {
   return result;
 }
 
-async function enrichCandidateTagsWithQwen(candidates, stockDetailMap) {
+async function enrichCandidateTagsWithQwen(candidates, stockDetailMap, policyConfig) {
   const cache = readJSONFile(STOCK_TAG_CACHE_FILE) || { version: 1, items: {} };
   cache.items = cache.items || {};
   const updatedCodes = [];
@@ -616,7 +631,12 @@ async function enrichCandidateTagsWithQwen(candidates, stockDetailMap) {
     const detail = stockDetailMap[stock.code] || {};
     const cached = cachedStockTags(cache, stock.code);
     if (cached) {
-      detail.concepts = normalizeTagList([...(detail.concepts || []), ...cached.tags], 12);
+      detail.concepts = normalizeBusinessTags(
+        [...(detail.concepts || []), ...cached.tags],
+        policyConfig,
+        { source: 'qwen3-stock-tag-cache', example: `${stock.code} ${stock.name}` },
+        12,
+      );
       detail.tag_enrichment = { source: 'qwen3-cache', evidence: cached.evidence || '' };
       stockDetailMap[stock.code] = detail;
       continue;
@@ -634,7 +654,12 @@ async function enrichCandidateTagsWithQwen(candidates, stockDetailMap) {
     const row = enriched[item.stock.code];
     if (!row?.tags?.length) continue;
     const detail = stockDetailMap[item.stock.code] || item.detail || {};
-    detail.concepts = normalizeTagList([...(detail.concepts || []), ...row.tags], 12);
+    detail.concepts = normalizeBusinessTags(
+      [...(detail.concepts || []), ...row.tags],
+      policyConfig,
+      { source: 'qwen3-stock-tag', example: `${item.stock.code} ${item.stock.name}: ${row.evidence || ''}` },
+      12,
+    );
     detail.tag_enrichment = { source: 'qwen3', evidence: row.evidence || '' };
     stockDetailMap[item.stock.code] = detail;
     cache.items[item.stock.code] = {
@@ -1081,8 +1106,12 @@ function calcCertaintyBonus(policyConfig, stockDetail, fallbackIndustry) {
     return { score: 0, detail: '未配置 top_industries', matchedThemes: [] };
   }
 
-  const industry = stockDetail?.industry || fallbackIndustry || '';
-  const concepts = Array.isArray(stockDetail?.concepts) ? stockDetail.concepts : [];
+  const normalizedTags = normalizeBusinessTags([
+    stockDetail?.industry || fallbackIndustry || '',
+    ...(Array.isArray(stockDetail?.concepts) ? stockDetail.concepts : []),
+  ], policyConfig, { source: 'certainty-bonus-match', example: stockDetail?.name || '' }, 12);
+  const industry = normalizedTags[0] || stockDetail?.industry || fallbackIndustry || '';
+  const concepts = normalizedTags.length ? normalizedTags : (Array.isArray(stockDetail?.concepts) ? stockDetail.concepts : []);
   const matchedThemes = [];
 
   for (const theme of themes) {
@@ -1423,6 +1452,26 @@ function buildDisplayIndustries(stock, stockDetail, conceptHeatMap) {
   }
 
   return result;
+}
+
+function normalizeCandidateStockDetails(candidates, stockDetailMap, policyConfig) {
+  for (const stock of candidates) {
+    const detail = stockDetailMap[stock.code] || {};
+    const normalized = tagNormalizer.normalizeStockDetail(detail, {
+      trustedNewTags: policyTrustedTags(policyConfig),
+      context: { source: 'public-stock-detail', example: `${stock.code} ${stock.name}` },
+      limit: 12,
+    });
+    if (!normalized.industry && stock.industry) {
+      const fallback = normalizeBusinessTags([stock.industry], policyConfig, {
+        source: 'candidate-stock-industry',
+        example: `${stock.code} ${stock.name}`,
+      }, 3);
+      if (fallback.length) normalized.industry = fallback[0];
+    }
+    stockDetailMap[stock.code] = normalized;
+  }
+  return stockDetailMap;
 }
 
 async function buildStockDetailMap(candidates) {
@@ -2529,8 +2578,10 @@ async function main() {
   const stockDetailMap = await buildStockDetailMap(toAnalyze);
   console.log(`  ✅ 已获取 ${Object.keys(stockDetailMap).length} 只股票的详情信息`);
 
+  normalizeCandidateStockDetails(toAnalyze, stockDetailMap, policyConfig);
+
   console.log('🤖 Qwen3 兜底校对候选股行业/题材标签...');
-  const tagEnrichment = await enrichCandidateTagsWithQwen(toAnalyze, stockDetailMap);
+  const tagEnrichment = await enrichCandidateTagsWithQwen(toAnalyze, stockDetailMap, policyConfig);
   console.log(`  ✅ Qwen3 标签兜底：检查 ${tagEnrichment.checked} 只，更新 ${tagEnrichment.updated} 只`);
 
   // 2. 获取板块热点数据（批量一次性获取）
