@@ -58,6 +58,8 @@
 
 `score` 取 `0–100` 的数值。`signals.reasons` 必须为字符串数组，`signals.indicators` 必须为对象；缺失时分别写 `[]`、`{}`，不写 JSON 字符串。
 
+`POST /api/selections/import` 复用 `JOB_API_TOKEN` / `X-Job-Token` 鉴权。请求体包含 `trade_date` 和 `items`；每个 item 必须写入 `strategy_name`。当前本地官方脚本只允许两类策略名：`追涨` 与 `超跌`。追涨原始分为 100 分制，直接导入 0–100；超跌原始分为 130 分制，导入器必须先归一化到 0–100，并在 `signals.indicators.raw_score` 与 `signals.indicators.raw_score_max = 130` 保留原始分制。后端以 `(stock_code, trade_date, strategy_name)` 幂等覆盖，同一交易日不同策略不得互相覆盖。
+
 ## HTTP API
 
 所有成功响应使用统一信封，股票代码为六位字符串（例如 `600519`）：
@@ -73,6 +75,7 @@
 | `/api/health` | GET | `data: { "status": "ok", "service": "xuangu-api" }` |
 | `/api/stocks?page=1&size=20&industry=` | GET | `data: { "items", "page", "size", "total" }` |
 | `/api/selections?date=YYYY-MM-DD&strategy=` | GET | `data: { "date", "strategy", "items", "count" }` |
+| `/api/selections/import` | POST | 导入本地官方脚本选股结果；需 `X-Job-Token` |
 | `/api/market/indices` | GET | `data: { "items": [{ "name", "code", "price", "change_pct", "as_of" }] }` |
 | `/api/selections/run` | POST | 请求体 `{ "date": "YYYY-MM-DD" }`（可省略）；202，`data.status = "accepted"` |
 | `/api/market/snapshots/import` | POST | 导入四指数和入选股票 AKShare 快照；需 `X-Job-Token` |

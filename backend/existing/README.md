@@ -14,6 +14,8 @@
 
 `selection_script.py` 是供国内网络本机运行的适配器：它依次执行 `D:\Program Files\xuangu\zhuizhang\stock_screener.js`（strategy_name=`追涨`）和 `D:\Program Files\xuangu\chaodie\chaodie_screener.js`（strategy_name=`超跌`），然后解析各自新生成的 HTML 报告，每套策略最多返回前 10 只，作为 `/api/selections/import` 的 `items`。它不连接 Railway 数据库、不拉取项目行情，也不重算 MA/MACD/KDJ 或任何内部策略评分；评分、评级和明细完全以 D 盘正式脚本为准。超跌报告原始 130 分制会归一化到导入 API 的 0–100 分，并在 `indicators.raw_score/raw_score_max` 保留原始分。D 盘资产只读。生产端 `builtin.enabled=false` 且 custom 动态加载关闭，防止 Railway 回退执行内部策略。
 
+本地每日自动化由仓库 `scripts/` 中的 PowerShell 任务安装脚本维护：消息面刷新任务优先使用 PowerShell 7（`pwsh.exe`）、隐藏窗口、UTF-8 日志；公司大模型只做快讯/标签预筛，DeepSeek 负责每日定稿、3 天复核和 Qwen3 覆盖不足时兜底。相关缓存位于 `D:\Program Files\xuangu\policy_scores*.json`、`D:\Program Files\xuangu\zixun_gongsidamoxing\` 与 `D:\Program Files\xuangu\Temp\Industry Classification_Tag\`。`TAG_REVIEW_BATCH_SIZE=10` 只表示标签规则复核的安全分批，不是快讯数量上限。
+
 在 `backend/` 目录执行：
 
 ```powershell
