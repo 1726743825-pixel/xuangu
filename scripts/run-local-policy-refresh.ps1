@@ -2,7 +2,8 @@
 param(
     [string]$NodePath = 'node',
     [string]$ScreenerPath = 'D:\Program Files\xuangu\zhuizhang\stock_screener.js',
-    [string]$LogDirectory = ''
+    [string]$LogDirectory = '',
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,7 +27,9 @@ $scriptName = Split-Path -Leaf $ScreenerPath
 Push-Location $scriptDir
 try {
     "[$(Get-Date -Format s)] starting policy refresh" | Tee-Object -FilePath $logFile
-    & $NodePath $scriptName --policy-refresh-only *>&1 | Tee-Object -FilePath $logFile -Append
+    $nodeArgs = @($scriptName, '--policy-refresh-only')
+    if ($Force) { $nodeArgs += '--force-policy-refresh' }
+    & $NodePath @nodeArgs *>&1 | Tee-Object -FilePath $logFile -Append
     if ($LASTEXITCODE -ne 0) {
         throw "policy refresh failed with exit code $LASTEXITCODE. See log: $logFile"
     }

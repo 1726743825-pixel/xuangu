@@ -2198,16 +2198,17 @@ function calcDeductions(stock, klines, marketInfo, sectorInfo) {
   return { totalDed: Math.min(totalDed, 100), deductions };
 }
 
-async function refreshPolicyStates() {
+async function refreshPolicyStates(options = {}) {
   console.log('📡 获取长期/短期加分配置...');
+  const forcePolicyRefresh = Boolean(options.forcePolicyRefresh);
   const longPolicyState = fetchPolicyScoreConfig();
   let dailyPolicyState = getDailyPolicyState();
   let latestDailyNews = [];
   let latestPrefilterConfig = null;
-  if (!dailyPolicyState.usable) {
+  if (forcePolicyRefresh || !dailyPolicyState.usable) {
     const dailyNews = await getPolicyNews();
     latestDailyNews = dailyNews;
-    console.log(`  ♻️ 公司大模型快讯初筛（${dailyNews.length} 条增量，仅备份）...`);
+    console.log(`  ♻️ 公司大模型快讯初筛（${dailyNews.length} 条${forcePolicyRefresh ? '最新/补充' : '增量'}，仅备份）...`);
     const dailyRefresh = await refreshPolicyWithFreeModel(dailyNews);
     if (dailyRefresh.ok) {
       latestPrefilterConfig = dailyRefresh.config;
@@ -2222,7 +2223,7 @@ async function refreshPolicyStates() {
     } else console.log(`  ⚠️ 公司大模型快讯初筛失败：${dailyRefresh.reason}`);
   }
   let shortPolicyState = getShortPolicyState();
-  if (!shortPolicyState.usable) {
+  if (forcePolicyRefresh || !shortPolicyState.usable) {
     const reviewNews = getArchivedPolicyNewsSince(shortPolicyState.config?.updated_at);
     console.log(`  ♻️ DeepSeek 3天复核（${reviewNews.length} 条归档新闻）...`);
     const refreshState = await refreshPolicyWithDeepSeek(reviewNews);
@@ -2306,7 +2307,8 @@ async function main() {
 
   const startTime = Date.now();
 
-  const policyState = await refreshPolicyStates();
+  const forcePolicyRefresh = process.argv.includes('--force-policy-refresh') || process.env.XUANGU_FORCE_POLICY_REFRESH === '1';
+  const policyState = await refreshPolicyStates({ forcePolicyRefresh });
   const policyConfig = policyState.config;
   if (process.argv.includes('--policy-refresh-only') || process.env.XUANGU_POLICY_REFRESH_ONLY === '1') {
     if (!isTodayDeepSeekDailyFinal(policyState.dailyPolicyState?.config)) {
