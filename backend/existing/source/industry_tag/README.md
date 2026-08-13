@@ -32,3 +32,19 @@ const tags = tagNormalizer.normalizeTags(['AI服务器', '算力', '未分类'],
 });
 // => ['AI算力与服务器']
 ```
+
+## 全量标签扫描与 Qwen3 复核
+
+本目录已经执行过一次全量扫描：
+
+- 扫描脚本：`E:\CodexOutput\xuangu\scripts\collect-industry-tags.js`
+- Qwen3 复核脚本：`E:\CodexOutput\xuangu\scripts\review-tags-with-qwen.js`
+- 汇总文件：`all_tags_summary.json` / `all_tags_summary.md`
+- Qwen3 复核输出：`qwen_tag_review_output.json`
+- Qwen3 复核总结：`qwen_tag_review_summary.md`
+
+当前结论：Qwen3 能胜任“初筛和归类建议”，但不能无校验直接改规则。原因是少数结果存在 action 与 canonical 语义不一致。因此当前自动采纳规则为：
+
+1. `action=map` 且 `canonical` 已存在于 `tag_rules.json`，自动把 raw_tag 加入对应别名。
+2. `action=block` 自动加入 `blocked_tags`。
+3. `action=new` 或 canonical 不明确的结果进入 `qwen_tag_review_pending.json`，等待 DeepSeek 或人工复核。
