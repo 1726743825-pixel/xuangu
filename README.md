@@ -147,7 +147,7 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 `-ReplaceExisting` 不会上传到计划任务默认命令；不要把它加入每日自动任务。替换前确认结果属于单一策略，并确认目标日期无误。
 
-确认手动运行正常后，以下命令才会**创建/更新** Windows 任务计划程序任务；它每天本机时间 15:05 运行，仅在当前用户已登录且位于国内网络时执行。任务通过 `backend/existing/selection_script.py` 依次运行用户拥有的 `D:\Program Files\xuangu\zhuizhang\stock_screener.js`（追涨）和 `D:\Program Files\xuangu\chaodie\chaodie_screener.js`（超跌），分别解析新生成的 HTML 报告并导入；项目内置策略已禁用，不参与本机每日导入：
+确认手动运行正常后，以下命令才会**创建/更新** Windows 任务计划程序任务；它每天本机时间 16:10 运行，仅在当前用户已登录且位于国内网络时执行。任务通过 `backend/existing/selection_script.py` 依次运行用户拥有的 `D:\Program Files\xuangu\zhuizhang\stock_screener.js`（追涨）和 `D:\Program Files\xuangu\chaodie\chaodie_screener.js`（超跌），分别解析新生成的 HTML 报告并导入；项目内置策略已禁用，不参与本机每日导入。追涨脚本会先检查当天 `policy_scores_daily.json` 是否已由 DeepSeek V4 Flash 定稿，未定稿则暂缓选股并返回失败：
 
 ```powershell
 .\scripts\install-local-selection-task.ps1
@@ -159,14 +159,21 @@ JOB_API_TOKEN=<与 Railway 服务相同的令牌>
 
 追涨和超跌每套策略最多导入排名前 10 只。追涨报告的换手率和连板数会分别作为 `turnover_rate`、`board_count` 一并导入选股结果。超跌报告为 130 分制，导入时会将 `score` 归一化到 0–100，并在 `indicators.raw_score/raw_score_max` 保留原始分。报告自带价格时优先保留；否则用报告日期之前最近一个真实 AKShare 日K收盘作为 `selection_price`，同时保存该 bar 的 `selection_price_date`。当前价也来自最近真实日K，时间固定为该 bar 日期的收盘时刻；周末报告不会被标记成周末实时行情。行情同步只服务展示和收益计算，不参与候选股计算。
 
-消息面/政策加分缓存由本机追涨脚本维护，缓存文件保存在 `D:\Program Files\xuangu\policy_scores_daily.json`、`policy_scores_short.json`、`policy_news_cursor.json` 和 `policy_news_archive.json`。除收盘选股会自动尝试刷新外，也可以用独立入口每 6 小时刷新一次，不运行选股、不上传结果：
+消息面/政策加分缓存由本机追涨脚本维护。最终加分文件保存在主目录：`D:\Program Files\xuangu\policy_scores.json`（长期）、`policy_scores_daily.json`（每日短期）、`policy_scores_short.json`（短期/周期复核）；公司大模型每 2 小时跑出来的资讯材料保存在 `D:\Program Files\xuangu\zixun_gongsidamoxing\`，包括 `policy_news_cursor.json`、`policy_news_archive.json` 和 `policy_news_prefilter_daily.json`，仅作为 DeepSeek/人工校核材料。收盘后应先刷新消息面，再运行选股；也可以用独立入口刷新，不运行选股、不上传结果：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\run-local-policy-refresh.ps1
 ```
 
-如需注册 Windows 计划任务，建议使用当前 Windows 用户、工作目录设为项目根目录，触发器为每日每 6 小时重复；该任务只刷新消息面缓存。Qwen3-Instruct 作为主模型，DeepSeek 作为失败兜底和 3 天复核。日志默认写入 `logs\policy-refresh-*.log`，不得输出任何 API key。
+如需注册 Windows 计划任务，先注册消息面刷新任务，再注册 16:10 的选股导入任务。消息面刷新任务在当前 Windows 用户登录时立即执行一次；只要电脑开机且该用户保持登录，之后每 2 小时重复执行一次：
+
+```powershell
+.\scripts\install-local-policy-refresh-task.ps1
+.\scripts\install-local-selection-task.ps1
+```
+
+消息面刷新任务中，公司大模型只做快讯初筛并把结果备份到 `zixun_gongsidamoxing\policy_news_prefilter_daily.json`；DeepSeek V4 Flash 再读取初筛结果和原始归档，决定哪些快讯进入每日短期加分、哪些进入长期/周期观察，并回写主目录 `policy_scores_daily.json`。DeepSeek 3 天复核继续更新 `policy_scores_short.json`。16:10 选股任务如果发现 DeepSeek 当日定稿未完成，会暂缓选股并失败退出，避免用旧消息面选股。日志默认写入 `logs\policy-refresh-*.log`，不得输出任何 API key。
 
 如需为已经入库的历史/周末官方报告补齐行情，使用独立受控命令；它只读取该日期现有选股，不运行 D 盘 Node、不重新选股、不替换或删除任何结果：
 
@@ -174,7 +181,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 .\scripts\refresh-existing-selection-market-data.ps1 -TradeDate 2026-08-09
 ```
 
-该刷新命令会先用报告日之前最近的真实日K收盘价原子补齐缺失的固定选入价和价格日期，再上传最近真实交易日的日K、30分钟K、四指数和股票收盘快照；已有固定选入价不会被刷新改变，任一股票补价失败时整批固定价都不会回写。所有日期时间沿用真实 bar。它不在 Windows 计划任务中；每日任务仍为15:05，周末会在运行官方脚本前安全跳过。
+该刷新命令会先用报告日之前最近的真实日K收盘价原子补齐缺失的固定选入价和价格日期，再上传最近真实交易日的日K、30分钟K、四指数和股票收盘快照；已有固定选入价不会被刷新改变，任一股票补价失败时整批固定价都不会回写。所有日期时间沿用真实 bar。它不在 Windows 计划任务中；每日选股导入任务为16:10，周末会在运行官方脚本前安全跳过。
 
 ### 一次性指定官方报告迁移
 

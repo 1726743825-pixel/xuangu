@@ -610,4 +610,14 @@ def test_refresh_powershell_does_not_embed_token_or_modify_daily_task():
     assert "JOB_API_TOKEN" not in refresh
     assert "--refresh-existing-date" in refresh
     assert "refresh-existing-selection-market-data" not in installer
-    assert "3:05PM" in installer
+    assert "4:10PM" in installer
+
+
+def test_policy_refresh_task_runs_every_two_hours_after_close():
+    project_root = Path(__file__).resolve().parents[2]
+    installer = (project_root / "scripts" / "install-local-policy-refresh-task.ps1").read_text(encoding="utf-8")
+    assert "run-local-policy-refresh.ps1" in installer
+    assert "New-ScheduledTaskTrigger -AtLogOn" in installer
+    assert "New-ScheduledTaskTrigger -Once" in installer
+    assert "-RepetitionInterval" in installer
+    assert "New-TimeSpan -Hours 2" in installer

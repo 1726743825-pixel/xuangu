@@ -46,10 +46,12 @@ const STOCK_DETAIL_FETCH_DELAY = 150;    // 东方财富详情请求间隔(ms)
 const POLICY_SCORE_URL = process.env.POLICY_SCORE_URL || 'https://gist.githubusercontent.com/1726743825-pixel/be9bfb4c401fbe9a6d10e56b344c2875/raw/policy_scores.json';
 const POLICY_SCORE_FALLBACK_URL = process.env.POLICY_SCORE_FALLBACK_URL || '';
 const LOCAL_POLICY_SCORE_FILE = 'D:/Program Files/xuangu/policy_scores.json';
+const POLICY_NEWS_DIR = 'D:/Program Files/xuangu/zixun_gongsidamoxing';
 const SHORT_POLICY_SCORE_FILE = 'D:/Program Files/xuangu/policy_scores_short.json';
 const DAILY_POLICY_SCORE_FILE = 'D:/Program Files/xuangu/policy_scores_daily.json';
-const POLICY_NEWS_CURSOR_FILE = 'D:/Program Files/xuangu/policy_news_cursor.json';
-const POLICY_NEWS_ARCHIVE_FILE = 'D:/Program Files/xuangu/policy_news_archive.json';
+const POLICY_NEWS_CURSOR_FILE = path.join(POLICY_NEWS_DIR, 'policy_news_cursor.json');
+const POLICY_NEWS_ARCHIVE_FILE = path.join(POLICY_NEWS_DIR, 'policy_news_archive.json');
+const DAILY_POLICY_PREFILTER_FILE = path.join(POLICY_NEWS_DIR, 'policy_news_prefilter_daily.json');
 const POLICY_FETCH_TIMEOUT = 15000;
 const LONG_POLICY_MAX_AGE_DAYS = 90;      // 长期政策/产业趋势按季度复核，不被短期快讯覆盖
 const SHORT_POLICY_MAX_AGE_DAYS = 3;      // DeepSeek 每3天复核短期催化与公司模型分组
@@ -172,6 +174,7 @@ function readJSONFile(filePath) {
 
 function writeJSONFile(filePath, data) {
   try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf-8');
     return true;
   } catch {
@@ -182,6 +185,7 @@ function writeJSONFile(filePath, data) {
 function writeJSONFileAtomic(filePath, data) {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(tempPath, `${JSON.stringify(data, null, 2)}\n`, 'utf-8');
     fs.renameSync(tempPath, filePath);
     return true;
@@ -515,10 +519,68 @@ async function refreshPolicyWithFreeModel(news) {
   if (!raw) return { ok: false, reason: '免费模型未返回可解析 JSON' };
   const config = normalizeAiPolicyConfig(raw, news.length);
   if (!config) return { ok: false, reason: '免费模型配置校验失败' };
-  config.version = `${formatDate(new Date())}-${usedModel}-daily-v1`;
-  config.refresh_meta = { source: 'free-daily-news-screen', model: usedModel, refreshed_at: new Date().toISOString(), news_count: news.length };
-  if (!writeJSONFileAtomic(DAILY_POLICY_SCORE_FILE, config)) return { ok: false, reason: '写入每日初筛配置失败' };
+  config.version = `${formatDate(new Date())}-${usedModel}-prefilter-v1`;
+  config.refresh_meta = {
+    source: 'company-model-news-prefilter',
+    model: usedModel,
+    refreshed_at: new Date().toISOString(),
+    news_count: news.length,
+    purpose: '仅作快讯初筛备份，不直接作为最终短期/长期加分',
+  };
+  if (!writeJSONFileAtomic(DAILY_POLICY_PREFILTER_FILE, config)) return { ok: false, reason: '写入公司模型初筛备份失败' };
   return { ok: true, config, newsCount: news.length, model: usedModel };
+}
+
+async function refreshDailyPolicyWithDeepSeek(prefilterConfig, news) {
+  if (!DEEPSEEK_API_KEY) return { ok: false, reason: '未配置 DEEPSEEK_API_KEY' };
+  if (!prefilterConfig || !Array.isArray(prefilterConfig.top_industries) || prefilterConfig.top_industries.length < 3) {
+    return { ok: false, reason: '公司模型初筛结果不足，无法交给 DeepSeek 定稿' };
+  }
+  const prefilterText = JSON.stringify({
+    analysis_summary: prefilterConfig.analysis_summary,
+    top_industries: prefilterConfig.top_industries,
+    scores: prefilterConfig.scores,
+  }, null, 2);
+  const newsText = news.slice(0, 80).map((item, index) =>
+    `${index + 1}. [${item.source} ${item.time}] ${item.title}${item.summary ? `：${item.summary}` : ''}`,
+  ).join('\n');
+  const system = '你是A股消息面最终复核器。公司大模型只负责粗筛快讯，你负责决定哪些进入每日短期加分、哪些应进入长期/周期加分观察。仅依据输入材料输出严格JSON，不得编造事实，不要Markdown。每日短期加分应偏交易性和1-3日催化；长期逻辑应标long但仍写入top_industries供后续3天复核。scores必须给出12项谨慎分值；若存在明确政策、订单、业绩、产业落地证据，不能全部为0。JSON字段只允许period、analysis_summary、top_industries、scores。top_industries最多8项，evidence每项不超过160字。';
+  const payload = JSON.stringify({
+    model: DEEPSEEK_MODEL,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: `公司模型初筛如下：\n${prefilterText}\n\n原始快讯节选如下：\n${newsText}` },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.1,
+    max_tokens: 5000,
+  });
+  const response = await requestJson(DEEPSEEK_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${DEEPSEEK_API_KEY}`,
+      'Content-Length': Buffer.byteLength(payload),
+    },
+    body: payload,
+    timeout: POLICY_AGENT_TIMEOUT,
+  });
+  if (response.status !== 200) return { ok: false, reason: `DeepSeek 日度复核 HTTP ${response.status || '请求失败'}` };
+  const raw = parseAiJsonContent(response.data?.choices?.[0]?.message?.content);
+  if (!raw) return { ok: false, reason: 'DeepSeek 日度复核未返回可解析 JSON' };
+  const config = normalizeAiPolicyConfig(raw, news.length);
+  if (!config) return { ok: false, reason: 'DeepSeek 日度复核配置校验失败' };
+  config.version = `${formatDate(new Date())}-${DEEPSEEK_MODEL}-daily-final-v1`;
+  config.refresh_meta = {
+    source: 'deepseek-v4-flash-daily-final',
+    model: DEEPSEEK_MODEL,
+    refreshed_at: new Date().toISOString(),
+    news_count: news.length,
+    company_prefilter_version: prefilterConfig.version || '',
+    company_prefilter_model: prefilterConfig.refresh_meta?.model || '',
+  };
+  if (!writeJSONFileAtomic(DAILY_POLICY_SCORE_FILE, config)) return { ok: false, reason: '写入 DeepSeek 日度最终加分失败' };
+  return { ok: true, config, newsCount: news.length };
 }
 
 async function refreshPolicyWithDeepSeek(newsInput = null) {
@@ -660,6 +722,35 @@ function getDailyPolicyState() {
   return buildPolicyState(
     readJSONFile(DAILY_POLICY_SCORE_FILE), 'daily-free-model', DAILY_POLICY_SCORE_FILE, [], 1,
   );
+}
+
+function isTodayDeepSeekDailyFinal(config, now = new Date()) {
+  if (!config) return false;
+  const meta = config.refresh_meta || {};
+  return config.updated_at === formatDate(now) &&
+    meta.source === 'deepseek-v4-flash-daily-final' &&
+    String(meta.model || '') === DEEPSEEK_MODEL;
+}
+
+function promoteDeepSeekReviewToDaily(shortConfig, prefilterConfig, newsCount) {
+  if (!shortConfig || !Array.isArray(shortConfig.top_industries) || shortConfig.top_industries.length < 3) return null;
+  const today = formatDate(new Date());
+  if (shortConfig.updated_at !== today) return null;
+  return {
+    ...shortConfig,
+    version: `${today}-${DEEPSEEK_MODEL}-daily-final-from-review-v1`,
+    updated_at: today,
+    period: `${today} DeepSeek 3天复核结果转每日定稿`,
+    refresh_meta: {
+      source: 'deepseek-v4-flash-daily-final',
+      model: DEEPSEEK_MODEL,
+      refreshed_at: new Date().toISOString(),
+      news_count: newsCount,
+      company_prefilter_version: prefilterConfig?.version || '',
+      company_prefilter_model: prefilterConfig?.refresh_meta?.model || '',
+      fallback_from_review: true,
+    },
+  };
 }
 
 function getPolicyConfigByHorizon(config, horizon) {
@@ -2111,14 +2202,24 @@ async function refreshPolicyStates() {
   console.log('📡 获取长期/短期加分配置...');
   const longPolicyState = fetchPolicyScoreConfig();
   let dailyPolicyState = getDailyPolicyState();
+  let latestDailyNews = [];
+  let latestPrefilterConfig = null;
   if (!dailyPolicyState.usable) {
     const dailyNews = await getPolicyNews();
-    console.log(`  ♻️ 每日新闻初筛（${dailyNews.length} 条增量）...`);
+    latestDailyNews = dailyNews;
+    console.log(`  ♻️ 公司大模型快讯初筛（${dailyNews.length} 条增量，仅备份）...`);
     const dailyRefresh = await refreshPolicyWithFreeModel(dailyNews);
     if (dailyRefresh.ok) {
-      dailyPolicyState = buildPolicyState(dailyRefresh.config, 'free-daily-auto', DAILY_POLICY_SCORE_FILE, [], 1);
-      console.log(`  ✅ ${dailyRefresh.model || FREE_LLM_MODEL} 已完成每日初筛`);
-    } else console.log(`  ⚠️ 每日免费模型初筛失败：${dailyRefresh.reason}`);
+      latestPrefilterConfig = dailyRefresh.config;
+      console.log(`  ✅ ${dailyRefresh.model || FREE_LLM_MODEL} 已完成快讯初筛备份`);
+      const dailyFinal = await refreshDailyPolicyWithDeepSeek(dailyRefresh.config, dailyNews);
+      if (dailyFinal.ok) {
+        dailyPolicyState = buildPolicyState(dailyFinal.config, 'deepseek-daily-final', DAILY_POLICY_SCORE_FILE, [], 1);
+        console.log(`  ✅ ${DEEPSEEK_MODEL} 已完成每日短期/长期加分定稿`);
+      } else {
+        console.log(`  ⚠️ DeepSeek 日度定稿失败：${dailyFinal.reason}`);
+      }
+    } else console.log(`  ⚠️ 公司大模型快讯初筛失败：${dailyRefresh.reason}`);
   }
   let shortPolicyState = getShortPolicyState();
   if (!shortPolicyState.usable) {
@@ -2136,6 +2237,17 @@ async function refreshPolicyStates() {
         console.log(`  ✅ DeepSeek 已根据 ${refreshState.newsCount} 条最新新闻完成3天复核`);
     } else {
       console.log(`  ⚠️ DeepSeek 短期刷新失败：${refreshState.reason}`);
+    }
+  }
+  if (!isTodayDeepSeekDailyFinal(dailyPolicyState.config)) {
+    const promotedDaily = promoteDeepSeekReviewToDaily(
+      shortPolicyState.config,
+      latestPrefilterConfig || readJSONFile(DAILY_POLICY_PREFILTER_FILE),
+      latestDailyNews.length || shortPolicyState.config?.refresh_meta?.news_count || 0,
+    );
+    if (promotedDaily && writeJSONFileAtomic(DAILY_POLICY_SCORE_FILE, promotedDaily)) {
+      dailyPolicyState = buildPolicyState(promotedDaily, 'deepseek-daily-final-from-review', DAILY_POLICY_SCORE_FILE, [], 1);
+      console.log(`  ✅ ${DEEPSEEK_MODEL} 已用3天复核结果生成今日每日定稿`);
     }
   }
   const policyConfig = mergePolicyConfigs(
@@ -2167,7 +2279,14 @@ async function refreshPolicyStates() {
   } else {
     console.log(`  ⚠️ 短期配置未启用：${shortPolicyState.reason}`);
   }
-  if (dailyPolicyState.usable) console.log(`  ✅ 每日初筛：${dailyPolicyState.config.version || FREE_LLM_MODEL}`);
+  if (dailyPolicyState.usable) {
+    console.log(`  ✅ 每日初筛：${dailyPolicyState.config.version || FREE_LLM_MODEL}`);
+    if (!isTodayDeepSeekDailyFinal(dailyPolicyState.config)) {
+      console.log('  ⚠️ 每日加分不是今日 DeepSeek V4 Flash 定稿，正式选股将暂缓。');
+    }
+  } else {
+    console.log(`  ⚠️ 每日初筛未启用：${dailyPolicyState.reason}`);
+  }
   return policyState;
 }
 
@@ -2190,8 +2309,14 @@ async function main() {
   const policyState = await refreshPolicyStates();
   const policyConfig = policyState.config;
   if (process.argv.includes('--policy-refresh-only') || process.env.XUANGU_POLICY_REFRESH_ONLY === '1') {
+    if (!isTodayDeepSeekDailyFinal(policyState.dailyPolicyState?.config)) {
+      throw new Error('DeepSeek V4 Flash 尚未完成今日消息面定稿，消息面刷新失败。');
+    }
     console.log('✅ 消息面缓存刷新完成（仅刷新模式），未执行选股。');
     return;
+  }
+  if (!isTodayDeepSeekDailyFinal(policyState.dailyPolicyState?.config)) {
+    throw new Error('DeepSeek V4 Flash 尚未完成今日消息面定稿，暂缓选股。');
   }
 
   // ── 从东方财富 API 获取实时数据（替代硬编码和缺失数据）──
