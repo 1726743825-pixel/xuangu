@@ -43,8 +43,11 @@ const tags = tagNormalizer.normalizeTags(['AI服务器', '算力', '未分类'],
 - Qwen3 复核输出：`qwen_tag_review_output.json`
 - Qwen3 复核总结：`qwen_tag_review_summary.md`
 
-当前结论：Qwen3 能胜任“初筛和归类建议”，但不能无校验直接改规则。原因是少数结果存在 action 与 canonical 语义不一致。因此当前自动采纳规则为：
+当前结论：Qwen3 仅可作为初筛和归类建议，所有关键结果必须由 DeepSeek 兜底或复核，不能无校验直接改规则。原因是少数结果存在 action 与 canonical 语义不一致。因此当前自动采纳规则为：
 
 1. `action=map` 且 `canonical` 已存在于 `tag_rules.json`，自动把 raw_tag 加入对应别名。
 2. `action=block` 自动加入 `blocked_tags`。
 3. `action=new` 或 canonical 不明确的结果进入 `qwen_tag_review_pending.json`，等待 DeepSeek 或人工复核。
+
+
+补充：Qwen3 能力不稳定，所有 Qwen3 处理信息的任务必须有 DeepSeek 兜底。标签复核脚本支持 `--deepseek-only`，默认分批处理（TAG_REVIEW_BATCH_SIZE，默认10），避免 DeepSeek 长 JSON 被截断；如果 Qwen3 失败、覆盖不足或输出格式异常，会切换 DeepSeek。

@@ -646,3 +646,15 @@ def test_policy_refresh_runs_selection_after_market_close_by_default():
     assert "scripts\\run-local-selection-import.ps1" in runner
     assert "$marketClose = Get-Date -Hour 15 -Minute 0 -Second 0" in runner
     assert "$SkipSelection" in runner
+
+
+def test_qwen_model_work_has_deepseek_fallbacks():
+    project_root = Path(__file__).resolve().parents[2]
+    screener = (project_root / "backend" / "existing" / "source" / "stock_screener.js").read_text(encoding="utf-8")
+    review = (project_root / "scripts" / "review-tags-with-qwen.js").read_text(encoding="utf-8")
+    assert "enrichStockTagsWithModelFallback" in screener
+    assert "DEEPSEEK_API_KEY" in screener
+    assert "qwenCoverage" in screener
+    assert "deepseekOnly" in review
+    assert "--deepseek-only" in review
+    assert "validCoverage" in review

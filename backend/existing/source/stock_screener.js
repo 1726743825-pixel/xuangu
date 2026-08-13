@@ -572,8 +572,8 @@ async function fetchStockNewsForTagging(code, name) {
   return rows.slice(0, 5);
 }
 
-async function qwenEnrichStockTags(stocks) {
-  if (!FREE_LLM_API_KEY || !stocks.length) return {};
+async function requestStockTagModel(stocks, { provider, apiKey, apiUrl, model }) {
+  if (!apiKey || !stocks.length) return {};
   const payloadStocks = stocks.map(item => ({
     code: item.stock.code,
     name: item.stock.name,
@@ -584,7 +584,7 @@ async function qwenEnrichStockTags(stocks) {
   const system = '你是A股上市公司业务标签校对员。只根据输入的公司名称、已有行业/概念、相关新闻标题摘要补充业务/题材标签；不得给股票打分，不得编造未出现的业务。输出严格JSON，不要Markdown。';
   const user = `请为以下候选股补充可能遗漏的业务/题材标签。JSON格式：{"items":[{"code":"000001","tags":["标签1"],"evidence":"20字内证据"}]}。每只最多5个tags，优先补充新业务、新进入行业、转型方向、订单/产品相关题材；没有证据则tags为空。\n${JSON.stringify(payloadStocks, null, 2)}`;
   const payload = JSON.stringify({
-    model: FREE_LLM_MODEL,
+    model,
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     response_format: { type: 'json_object' },
     temperature: 0,
@@ -594,11 +594,11 @@ async function qwenEnrichStockTags(stocks) {
   const timer = setTimeout(() => controller.abort(), STOCK_TAG_AGENT_TIMEOUT);
   let data = null;
   try {
-    const response = await fetch(FREE_LLM_API_URL, {
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${FREE_LLM_API_KEY}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Length': Buffer.byteLength(payload),
       },
       body: payload,
@@ -616,9 +616,33 @@ async function qwenEnrichStockTags(stocks) {
   for (const row of Array.isArray(parsed?.items) ? parsed.items : []) {
     const code = String(row.code || '').replace(/\D/g, '').padStart(6, '0');
     const tags = normalizeTagList(row.tags || [], 5);
-    if (code && tags.length) result[code] = { tags, evidence: String(row.evidence || '').slice(0, 120) };
+    if (code && tags.length) result[code] = {
+      tags,
+      evidence: String(row.evidence || '').slice(0, 120),
+      model,
+      provider,
+    };
   }
   return result;
+}
+
+async function enrichStockTagsWithModelFallback(stocks) {
+  if (!stocks.length) return {};
+  const qwenResult = await requestStockTagModel(stocks, {
+    provider: 'qwen3',
+    apiKey: FREE_LLM_API_KEY,
+    apiUrl: FREE_LLM_API_URL,
+    model: FREE_LLM_MODEL,
+  });
+  const qwenCoverage = Object.keys(qwenResult).length / stocks.length;
+  if (qwenCoverage >= 0.5 || !DEEPSEEK_API_KEY) return qwenResult;
+  const deepseekResult = await requestStockTagModel(stocks, {
+    provider: 'deepseek',
+    apiKey: DEEPSEEK_API_KEY,
+    apiUrl: DEEPSEEK_API_URL,
+    model: DEEPSEEK_MODEL,
+  });
+  return Object.keys(deepseekResult).length >= Object.keys(qwenResult).length ? deepseekResult : qwenResult;
 }
 
 async function enrichCandidateTagsWithQwen(candidates, stockDetailMap, policyConfig) {
@@ -649,7 +673,7 @@ async function enrichCandidateTagsWithQwen(candidates, stockDetailMap, policyCon
   }
 
   if (!toEnrich.length) return { checked: 0, updated: 0 };
-  const enriched = await qwenEnrichStockTags(toEnrich);
+  const enriched = await enrichStockTagsWithModelFallback(toEnrich);
   for (const item of toEnrich) {
     const row = enriched[item.stock.code];
     if (!row?.tags?.length) continue;
@@ -657,16 +681,18 @@ async function enrichCandidateTagsWithQwen(candidates, stockDetailMap, policyCon
     detail.concepts = normalizeBusinessTags(
       [...(detail.concepts || []), ...row.tags],
       policyConfig,
-      { source: 'qwen3-stock-tag', example: `${item.stock.code} ${item.stock.name}: ${row.evidence || ''}` },
+      { source: `${row.provider || 'qwen3'}-stock-tag`, example: `${item.stock.code} ${item.stock.name}: ${row.evidence || ''}` },
       12,
     );
-    detail.tag_enrichment = { source: 'qwen3', evidence: row.evidence || '' };
+    detail.tag_enrichment = { source: row.provider || 'qwen3', model: row.model || '', evidence: row.evidence || '' };
     stockDetailMap[item.stock.code] = detail;
     cache.items[item.stock.code] = {
       code: item.stock.code,
       name: item.stock.name,
       tags: row.tags,
       evidence: row.evidence || '',
+      provider: row.provider || 'qwen3',
+      model: row.model || '',
       updated_at: new Date().toISOString(),
     };
     updatedCodes.push(item.stock.code);
